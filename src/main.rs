@@ -3,7 +3,9 @@
 mod api;
 mod app;
 mod config;
+mod helpers;
 mod i18n;
+mod pages;
 
 fn main() -> cosmic::iced::Result {
     // Get the system's preferred languages.

@@ -1,12 +1,13 @@
 // SPDX-License-Identifier: MPL-2.0
 
-use crate::api::{ChromaClient, Collection, Document, ServerInfo};
+use crate::api::{Collection, Document, ServerInfo};
 use crate::config::{Config, ServerConfig};
 use crate::fl;
+use crate::helpers;
+use crate::pages;
 use cosmic::app::context_drawer;
 use cosmic::cosmic_config::{self, CosmicConfigEntry};
-use cosmic::iced::alignment::{Horizontal, Vertical};
-use cosmic::iced::{Alignment, Length, Subscription};
+use cosmic::iced::{Length, Subscription};
 use cosmic::widget::{self, about::About, icon, menu, nav_bar};
 use cosmic::prelude::*;
 use std::collections::HashMap;
@@ -28,41 +29,41 @@ pub struct AppModel {
     /// Key bindings for the application's menu bar.
     key_binds: HashMap<menu::KeyBind, MenuAction>,
     /// Configuration data that persists between application runs.
-    config: Config,
+    pub config: Config,
     /// Cosmic config context for saving
     config_context: Option<cosmic_config::Config>,
     
     // === App-specific state ===
     /// List of collections from the server
-    collections: Vec<Collection>,
+    pub collections: Vec<Collection>,
     /// Connection status
-    connection_status: ConnectionStatus,
+    pub connection_status: ConnectionStatus,
     /// Temporary server name input (before saving)
-    server_name_input: String,
+    pub server_name_input: String,
     /// Temporary server URL input (before saving)
-    server_url_input: String,
+    pub server_url_input: String,
     /// Temporary auth token input (before saving)
-    auth_token_input: String,
+    pub auth_token_input: String,
     /// Temporary auth header type input (before saving)
-    auth_header_type_input: String,
+    pub auth_header_type_input: String,
     /// Temporary tenant input (before saving)
-    tenant_input: String,
+    pub tenant_input: String,
     /// Temporary database input (before saving)
-    database_input: String,
+    pub database_input: String,
     /// Index of server being edited (None for new server dialog)
-    editing_server_index: Option<usize>,
+    pub editing_server_index: Option<usize>,
     /// Currently selected collection
-    selected_collection: Option<Collection>,
+    pub selected_collection: Option<Collection>,
     /// Documents in the selected collection
-    documents: Vec<Document>,
+    pub documents: Vec<Document>,
     /// Settings save/validation status
-    settings_status: SettingsStatus,
+    pub settings_status: SettingsStatus,
     /// Server info for dashboard
-    server_info: Option<ServerInfo>,
+    pub server_info: Option<ServerInfo>,
     /// Available databases for the current tenant (for selection)
-    available_databases: Vec<String>,
+    pub available_databases: Vec<String>,
     /// Available tenants (for selection)
-    available_tenants: Vec<String>,
+    pub available_tenants: Vec<String>,
 }
 
 /// What's missing during validation
@@ -289,16 +290,16 @@ impl cosmic::Application for AppModel {
         let space_m = cosmic::theme::spacing().space_m;
         
         let content: Element<_> = match self.nav.active_data::<Page>().unwrap_or(&Page::Dashboard) {
-            Page::Dashboard => self.view_dashboard(space_s, space_m),
+            Page::Dashboard => pages::dashboard::view(self, space_s, space_m),
             Page::Collections => {
                 // Show documents view if a collection is selected
                 if self.selected_collection.is_some() {
-                    self.view_documents(space_s, space_m)
+                    pages::documents::view(self, space_s, space_m)
                 } else {
-                    self.view_collections(space_s, space_m)
+                    pages::collections::view(self, space_s, space_m)
                 }
             }
-            Page::Settings => self.view_settings(space_s, space_m),
+            Page::Settings => pages::settings::view(self, space_s, space_m),
         };
 
         widget::container(content)
@@ -473,7 +474,7 @@ impl cosmic::Application for AppModel {
                 let database = self.database_input.clone();
                 
                 return cosmic::task::future(async move {
-                    let result = validate_tenant_database(&url, &token, &auth_header_type, &tenant, &database).await;
+                    let result = helpers::validate_tenant_database(&url, &token, &auth_header_type, &tenant, &database).await;
                     cosmic::Action::App(Message::SettingsValidationResult(result))
                 });
             }
@@ -513,7 +514,7 @@ impl cosmic::Application for AppModel {
                     let database = self.database_input.clone();
                     
                     return cosmic::task::future(async move {
-                        let result = create_missing_resources(&url, &token, &auth_header_type, &tenant, &database, tenant_exists, database_exists).await;
+                        let result = helpers::create_missing_resources(&url, &token, &auth_header_type, &tenant, &database, tenant_exists, database_exists).await;
                         cosmic::Action::App(Message::CreateResourcesResult(result))
                     });
                 }
@@ -538,7 +539,7 @@ impl cosmic::Application for AppModel {
                 let tenant = self.tenant_input.clone();
                 
                 return cosmic::task::future(async move {
-                    let result = fetch_databases(&url, &token, &auth_header_type, &tenant).await;
+                    let result = helpers::fetch_databases(&url, &token, &auth_header_type, &tenant).await;
                     cosmic::Action::App(Message::DatabasesLoaded(result))
                 });
             }
@@ -561,7 +562,7 @@ impl cosmic::Application for AppModel {
                 let auth_header_type = self.auth_header_type_input.clone();
                 
                 return cosmic::task::future(async move {
-                    let result = fetch_tenants(&url, &token, &auth_header_type).await;
+                    let result = helpers::fetch_tenants(&url, &token, &auth_header_type).await;
                     cosmic::Action::App(Message::TenantsLoaded(result))
                 });
             }
@@ -597,7 +598,7 @@ impl cosmic::Application for AppModel {
                 let auth_header_type = self.auth_header_type_input.clone();
                 
                 return cosmic::task::future(async move {
-                    let result = test_connection(&url, &token, &auth_header_type).await;
+                    let result = helpers::test_connection(&url, &token, &auth_header_type).await;
                     cosmic::Action::App(Message::ConnectionResult(result))
                 });
             }
@@ -623,7 +624,7 @@ impl cosmic::Application for AppModel {
                 let database = active.database.clone();
                 
                 return cosmic::task::future(async move {
-                    let result = fetch_collections(&url, &token, &auth_header_type, &tenant, &database).await;
+                    let result = helpers::fetch_collections(&url, &token, &auth_header_type, &tenant, &database).await;
                     cosmic::Action::App(Message::CollectionsLoaded(result))
                 });
             }
@@ -664,7 +665,7 @@ impl cosmic::Application for AppModel {
                     let database = active.database.clone();
                     
                     return cosmic::task::future(async move {
-                        let result = fetch_documents(&url, &token, &auth_header_type, &collection_id, &tenant, &database).await;
+                        let result = helpers::fetch_documents(&url, &token, &auth_header_type, &collection_id, &tenant, &database).await;
                         cosmic::Action::App(Message::DocumentsLoaded(result))
                     });
                 }
@@ -690,7 +691,7 @@ impl cosmic::Application for AppModel {
                 let auth_header_type = active.auth_header_type.clone();
                 
                 return cosmic::task::future(async move {
-                    let result = fetch_server_info(&url, &token, &auth_header_type).await;
+                    let result = helpers::fetch_server_info(&url, &token, &auth_header_type).await;
                     cosmic::Action::App(Message::ServerInfoLoaded(result))
                 });
             }
@@ -736,547 +737,6 @@ impl AppModel {
             Task::none()
         }
     }
-
-    /// View for the Dashboard page
-    fn view_dashboard(&self, _space_s: u16, space_m: u16) -> Element<'_, Message> {
-        let header = widget::row::with_capacity(2)
-            .push(widget::text::title1(fl!("dashboard")))
-            .push(self.connection_status_badge())
-            .align_y(Alignment::Center)
-            .spacing(space_m);
-
-        let refresh_button = widget::button::standard(fl!("refresh"))
-            .on_press(Message::FetchServerInfo);
-
-        // Stats cards
-        let version_card = self.stat_card(
-            fl!("server-version"),
-            self.server_info.as_ref().map(|i| i.version.clone()).unwrap_or_else(|| "-".to_string()),
-        );
-
-        let heartbeat_card = self.stat_card(
-            fl!("heartbeat"),
-            self.server_info.as_ref().map(|i| {
-                // Convert nanoseconds to a readable format
-                let secs = i.heartbeat_ns / 1_000_000_000;
-                format!("{} s", secs)
-            }).unwrap_or_else(|| "-".to_string()),
-        );
-
-        let active = self.config.active_config();
-        let tenant_card = self.stat_card(
-            fl!("current-tenant"),
-            active.tenant.clone(),
-        );
-
-        let database_card = self.stat_card(
-            fl!("current-database"),
-            active.database.clone(),
-        );
-
-        let collections_card = self.stat_card(
-            fl!("collection-count"),
-            self.collections.len().to_string(),
-        );
-
-        let api_version_card = self.stat_card(
-            fl!("api-version"),
-            self.server_info.as_ref().map(|i| i.api_version.clone()).unwrap_or_else(|| "-".to_string()),
-        );
-
-        let stats_row1 = widget::row::with_capacity(4)
-            .push(version_card)
-            .push(api_version_card)
-            .push(heartbeat_card)
-            .push(collections_card)
-            .spacing(space_m);
-
-        let stats_row2 = widget::row::with_capacity(2)
-            .push(tenant_card)
-            .push(database_card)
-            .spacing(space_m);
-
-        let content: Element<'_, Message> = match &self.connection_status {
-            ConnectionStatus::Disconnected | ConnectionStatus::Error(_) => {
-                widget::column::with_capacity(2)
-                    .push(
-                        widget::container(
-                            widget::text::body(fl!("dashboard-connect-hint"))
-                        )
-                        .padding(space_m)
-                        .width(Length::Fill)
-                        .class(cosmic::style::Container::Card)
-                    )
-                    .push(refresh_button)
-                    .spacing(space_m)
-                    .into()
-            }
-            _ => {
-                widget::column::with_capacity(3)
-                    .push(refresh_button)
-                    .push(stats_row1)
-                    .push(stats_row2)
-                    .spacing(space_m)
-                    .into()
-            }
-        };
-
-        widget::column::with_capacity(2)
-            .push(header)
-            .push(content)
-            .spacing(space_m)
-            .width(Length::Fill)
-            .height(Length::Fill)
-            .into()
-    }
-
-    /// Helper to create a stat card widget
-    fn stat_card(&self, label: String, value: String) -> Element<'_, Message> {
-        widget::container(
-            widget::column::with_capacity(2)
-                .push(widget::text::caption(label))
-                .push(widget::text::title3(value))
-                .spacing(4)
-        )
-        .padding(cosmic::theme::spacing().space_s)
-        .width(Length::FillPortion(1))
-        .class(cosmic::style::Container::Card)
-        .into()
-    }
-
-    /// View for the Collections page
-    fn view_collections(&self, space_s: u16, space_m: u16) -> Element<'_, Message> {
-        let header = widget::row::with_capacity(2)
-            .push(widget::text::title1(fl!("collections")))
-            .push(self.connection_status_badge())
-            .align_y(Alignment::Center)
-            .spacing(space_m);
-
-        let refresh_button = widget::button::standard(fl!("refresh"))
-            .on_press(Message::FetchCollections);
-
-        let toolbar = widget::row::with_capacity(1)
-            .push(refresh_button)
-            .spacing(space_s);
-
-        let content: Element<'_, Message> = if self.collections.is_empty() {
-            let empty_message = match &self.connection_status {
-                ConnectionStatus::Disconnected => fl!("not-connected"),
-                ConnectionStatus::Connecting => fl!("connecting"),
-                ConnectionStatus::Connected => fl!("no-collections"),
-                ConnectionStatus::Error(e) => e.clone(),
-            };
-            
-            widget::container(
-                widget::text::body(empty_message)
-            )
-            .width(Length::Fill)
-            .height(Length::Fill)
-            .align_x(Horizontal::Center)
-            .align_y(Vertical::Center)
-            .into()
-        } else {
-            let mut list_column = widget::column::with_capacity(self.collections.len());
-            
-            for collection in &self.collections {
-                let collection_clone = collection.clone();
-                let item = widget::mouse_area(
-                    widget::container(
-                        widget::column::with_capacity(2)
-                            .push(widget::text::title4(&collection.name))
-                            .push(widget::text::caption(format!("ID: {}", collection.id)))
-                            .spacing(4)
-                    )
-                    .padding(space_s)
-                    .width(Length::Fill)
-                    .class(cosmic::style::Container::Card)
-                )
-                .on_press(Message::SelectCollection(collection_clone));
-                
-                list_column = list_column.push(item);
-            }
-            
-            widget::scrollable(list_column.spacing(space_s))
-                .width(Length::Fill)
-                .height(Length::Fill)
-                .into()
-        };
-
-        widget::column::with_capacity(3)
-            .push(header)
-            .push(toolbar)
-            .push(content)
-            .spacing(space_m)
-            .width(Length::Fill)
-            .height(Length::Fill)
-            .into()
-    }
-
-    /// View for the Documents page (when a collection is selected)
-    fn view_documents(&self, space_s: u16, space_m: u16) -> Element<'_, Message> {
-        let collection_name = self
-            .selected_collection
-            .as_ref()
-            .map(|c| c.name.as_str())
-            .unwrap_or("Unknown");
-
-        let back_button = widget::button::icon(icon::from_name("go-previous-symbolic"))
-            .on_press(Message::BackToCollections);
-
-        let header = widget::row::with_capacity(3)
-            .push(back_button)
-            .push(widget::text::title1(collection_name))
-            .push(self.connection_status_badge())
-            .align_y(Alignment::Center)
-            .spacing(space_m);
-
-        let refresh_button = widget::button::standard(fl!("refresh"))
-            .on_press(Message::FetchDocuments);
-
-        let doc_count = widget::text::body(format!("{} {}", self.documents.len(), fl!("documents-count")));
-
-        let toolbar = widget::row::with_capacity(2)
-            .push(refresh_button)
-            .push(doc_count)
-            .spacing(space_s)
-            .align_y(Alignment::Center);
-
-        let content: Element<'_, Message> = if self.documents.is_empty() {
-            let empty_message = match &self.connection_status {
-                ConnectionStatus::Disconnected => fl!("not-connected"),
-                ConnectionStatus::Connecting => fl!("loading-documents"),
-                ConnectionStatus::Connected => fl!("no-documents"),
-                ConnectionStatus::Error(e) => e.clone(),
-            };
-            
-            widget::container(
-                widget::text::body(empty_message)
-            )
-            .width(Length::Fill)
-            .height(Length::Fill)
-            .align_x(Horizontal::Center)
-            .align_y(Vertical::Center)
-            .into()
-        } else {
-            let mut list_column = widget::column::with_capacity(self.documents.len());
-            
-            for doc in &self.documents {
-                let doc_content = doc.document.as_deref().unwrap_or("[No content]");
-                let preview = if doc_content.len() > 200 {
-                    format!("{}...", &doc_content[..200])
-                } else {
-                    doc_content.to_string()
-                };
-
-                let metadata_str = doc
-                    .metadata
-                    .as_ref()
-                    .map(|m| {
-                        m.iter()
-                            .map(|(k, v)| format!("{}: {}", k, v))
-                            .collect::<Vec<_>>()
-                            .join(", ")
-                    })
-                    .unwrap_or_default();
-
-                let mut item_content = widget::column::with_capacity(3)
-                    .push(widget::text::title4(&doc.id))
-                    .push(widget::text::body(preview))
-                    .spacing(4);
-
-                if !metadata_str.is_empty() {
-                    item_content = item_content.push(
-                        widget::text::caption(metadata_str)
-                    );
-                }
-
-                let item = widget::container(item_content)
-                    .padding(space_s)
-                    .width(Length::Fill)
-                    .class(cosmic::style::Container::Card);
-                
-                list_column = list_column.push(item);
-            }
-            
-            widget::scrollable(list_column.spacing(space_s))
-                .width(Length::Fill)
-                .height(Length::Fill)
-                .into()
-        };
-
-        widget::column::with_capacity(3)
-            .push(header)
-            .push(toolbar)
-            .push(content)
-            .spacing(space_m)
-            .width(Length::Fill)
-            .height(Length::Fill)
-            .into()
-    }
-
-    /// View for the Settings page
-    fn view_settings(&self, space_s: u16, space_m: u16) -> Element<'_, Message> {
-        let header = widget::text::title1(fl!("settings"));
-
-        // Server selection section - show list of saved servers
-        let mut server_buttons = widget::row::with_capacity(self.config.servers.len() + 1);
-        for (index, server) in self.config.servers.iter().enumerate() {
-            let is_active = index == self.config.active_server;
-            let button = widget::button::text(&server.name)
-                .class(if is_active {
-                    cosmic::theme::Button::Suggested
-                } else {
-                    cosmic::theme::Button::Standard
-                })
-                .on_press(Message::SelectServer(index));
-            server_buttons = server_buttons.push(button);
-        }
-        // Add new server button
-        server_buttons = server_buttons
-            .push(widget::button::icon(icon::from_name("list-add-symbolic")).on_press(Message::AddNewServer))
-            .spacing(space_s);
-
-        let servers_section = cosmic::widget::settings::section()
-            .title(fl!("servers"))
-            .add(
-                cosmic::widget::settings::item::builder(fl!("saved-servers"))
-                    .description(fl!("saved-servers-description"))
-                    .control(server_buttons)
-            );
-
-        // Server configuration section
-        let mut server_section = cosmic::widget::settings::section()
-            .title(fl!("server-config"))
-            .add(
-                cosmic::widget::settings::item::builder(fl!("server-name"))
-                    .description(fl!("server-name-description"))
-                    .control(
-                        widget::text_input(fl!("server-name-placeholder"), &self.server_name_input)
-                            .on_input(Message::ServerNameChanged)
-                            .width(Length::Fixed(300.0))
-                    )
-            )
-            .add(
-                cosmic::widget::settings::item::builder(fl!("server-url"))
-                    .description(fl!("server-url-description"))
-                    .control(
-                        widget::text_input(fl!("server-url-placeholder"), &self.server_url_input)
-                            .on_input(Message::ServerUrlChanged)
-                            .width(Length::Fixed(300.0))
-                    )
-            )
-            .add(
-                cosmic::widget::settings::item::builder(fl!("auth-token"))
-                    .description(fl!("auth-token-description"))
-                    .control(
-                        widget::secure_input(fl!("auth-token-placeholder"), &self.auth_token_input, None, true)
-                            .on_input(Message::AuthTokenChanged)
-                            .width(Length::Fixed(300.0))
-                    )
-            )
-            .add(
-                cosmic::widget::settings::item::builder(fl!("auth-header-type"))
-                    .description(fl!("auth-header-type-description"))
-                    .control(
-                        widget::row::with_capacity(2)
-                            .push(
-                                widget::button::text("Authorization: Bearer")
-                                    .class(if self.auth_header_type_input == "authorization" {
-                                        cosmic::theme::Button::Suggested
-                                    } else {
-                                        cosmic::theme::Button::Standard
-                                    })
-                                    .on_press(Message::AuthHeaderTypeChanged("authorization".to_string()))
-                            )
-                            .push(
-                                widget::button::text("X-Chroma-Token")
-                                    .class(if self.auth_header_type_input == "x-chroma-token" {
-                                        cosmic::theme::Button::Suggested
-                                    } else {
-                                        cosmic::theme::Button::Standard
-                                    })
-                                    .on_press(Message::AuthHeaderTypeChanged("x-chroma-token".to_string()))
-                            )
-                            .spacing(space_s)
-                    )
-            )
-            .add(
-                cosmic::widget::settings::item::builder(fl!("tenant"))
-                    .description(fl!("tenant-description"))
-                    .control(
-                        widget::column::with_capacity(2)
-                            .push(
-                                widget::text_input(fl!("tenant-placeholder"), &self.tenant_input)
-                                    .on_input(Message::TenantChanged)
-                                    .width(Length::Fixed(300.0))
-                            )
-                            .push({
-                                let mut tenant_row = widget::row::with_capacity(self.available_tenants.len() + 1)
-                                    .spacing(space_s);
-                                for tenant in &self.available_tenants {
-                                    let is_selected = *tenant == self.tenant_input;
-                                    tenant_row = tenant_row.push(
-                                        widget::button::text(tenant)
-                                            .class(if is_selected {
-                                                cosmic::theme::Button::Suggested
-                                            } else {
-                                                cosmic::theme::Button::Standard
-                                            })
-                                            .on_press(Message::SelectTenant(tenant.clone()))
-                                    );
-                                }
-                                tenant_row
-                            })
-                            .spacing(space_s)
-                    )
-            )
-            .add(
-                cosmic::widget::settings::item::builder(fl!("database"))
-                    .description(fl!("database-description"))
-                    .control(
-                        widget::column::with_capacity(2)
-                            .push(
-                                widget::text_input(fl!("database-placeholder"), &self.database_input)
-                                    .on_input(Message::DatabaseChanged)
-                                    .width(Length::Fixed(300.0))
-                            )
-                            .push({
-                                let mut db_row = widget::row::with_capacity(self.available_databases.len() + 1)
-                                    .spacing(space_s);
-                                for db in &self.available_databases {
-                                    let is_selected = *db == self.database_input;
-                                    db_row = db_row.push(
-                                        widget::button::text(db)
-                                            .class(if is_selected {
-                                                cosmic::theme::Button::Suggested
-                                            } else {
-                                                cosmic::theme::Button::Standard
-                                            })
-                                            .on_press(Message::SelectDatabase(db.clone()))
-                                    );
-                                }
-                                db_row
-                            })
-                            .spacing(space_s)
-                    )
-            )
-            .add(
-                cosmic::widget::settings::item::builder(fl!("load-available"))
-                    .description(fl!("load-available-description"))
-                    .control(
-                        widget::row::with_capacity(2)
-                            .push(
-                                widget::button::standard(fl!("load-tenants"))
-                                    .on_press(Message::FetchTenants)
-                            )
-                            .push(
-                                widget::button::standard(fl!("load-databases"))
-                                    .on_press(Message::FetchDatabases)
-                            )
-                            .spacing(space_s)
-                    )
-            );
-
-        // Add delete button if there's more than one server
-        if self.config.servers.len() > 1 {
-            server_section = server_section.add(
-                cosmic::widget::settings::item::builder(fl!("delete-server"))
-                    .description(fl!("delete-server-description"))
-                    .control(
-                        widget::button::destructive(fl!("delete"))
-                            .on_press(Message::DeleteServer(self.config.active_server))
-                    )
-            );
-        }
-
-        // Connection status
-        let connection_status_text = match &self.connection_status {
-            ConnectionStatus::Disconnected => fl!("status-disconnected"),
-            ConnectionStatus::Connecting => fl!("status-connecting"),
-            ConnectionStatus::Connected => fl!("status-connected"),
-            ConnectionStatus::Error(e) => format!("{}: {}", fl!("status-error"), e),
-        };
-
-        // Settings save status
-        let (save_button_label, save_status_text, show_create_button) = match &self.settings_status {
-            SettingsStatus::Idle => (fl!("save"), String::new(), false),
-            SettingsStatus::Validating => (fl!("validating"), fl!("validating-tenant-db"), false),
-            SettingsStatus::Saved => (fl!("save"), fl!("settings-saved"), false),
-            SettingsStatus::Error(e) => (fl!("save"), e.clone(), false),
-            SettingsStatus::MissingResources(missing) => {
-                let mut missing_parts = Vec::new();
-                if !missing.tenant_exists {
-                    missing_parts.push(format!("{} '{}'", fl!("tenant"), missing.tenant_name));
-                }
-                if !missing.database_exists {
-                    missing_parts.push(format!("{} '{}'", fl!("database"), missing.database_name));
-                }
-                let msg = format!("{}: {}", fl!("missing-resources"), missing_parts.join(", "));
-                (fl!("save"), msg, true)
-            }
-            SettingsStatus::Creating => (fl!("creating"), fl!("creating-resources"), false),
-        };
-
-        let save_button = if matches!(self.settings_status, SettingsStatus::Validating | SettingsStatus::Creating) {
-            widget::button::standard(save_button_label)
-        } else {
-            widget::button::standard(save_button_label).on_press(Message::ValidateAndSaveSettings)
-        };
-
-        let mut buttons = widget::row::with_capacity(5)
-            .push(save_button)
-            .push(widget::button::suggested(fl!("test-connection")).on_press(Message::TestConnection))
-            .push(widget::text::body(connection_status_text))
-            .spacing(space_s)
-            .align_y(Alignment::Center);
-
-        // Show create button if resources are missing
-        if show_create_button {
-            buttons = buttons.push(
-                widget::button::suggested(fl!("create-missing"))
-                    .on_press(Message::CreateMissingResources)
-            );
-        }
-
-        // Show save status if there's one
-        if !save_status_text.is_empty() {
-            let status_style = match &self.settings_status {
-                SettingsStatus::Saved => cosmic::theme::Button::Suggested,
-                SettingsStatus::Error(_) | SettingsStatus::MissingResources(_) => cosmic::theme::Button::Destructive,
-                _ => cosmic::theme::Button::Standard,
-            };
-            buttons = buttons.push(
-                widget::button::custom(widget::text::caption(save_status_text))
-                    .class(status_style)
-            );
-        }
-
-        widget::scrollable(
-            widget::column::with_capacity(4)
-                .push(header)
-                .push(servers_section)
-                .push(server_section)
-                .push(buttons)
-                .spacing(space_m)
-                .width(Length::Fill)
-        )
-        .height(Length::Fill)
-        .into()
-    }
-
-    /// Connection status badge widget
-    fn connection_status_badge(&self) -> Element<'_, Message> {
-        let (text, style) = match &self.connection_status {
-            ConnectionStatus::Disconnected => (fl!("disconnected"), cosmic::theme::Button::Standard),
-            ConnectionStatus::Connecting => (fl!("connecting"), cosmic::theme::Button::Standard),
-            ConnectionStatus::Connected => (fl!("connected"), cosmic::theme::Button::Suggested),
-            ConnectionStatus::Error(_) => (fl!("error"), cosmic::theme::Button::Destructive),
-        };
-        
-        widget::button::custom(widget::text::body(text))
-            .class(style)
-            .into()
-    }
 }
 
 /// The page to display in the application.
@@ -1308,79 +768,4 @@ impl menu::action::MenuAction for MenuAction {
             MenuAction::About => Message::ToggleContextPage(ContextPage::About),
         }
     }
-}
-
-// === Async helper functions ===
-
-/// Helper to create a client with auto-detected API version
-async fn create_client(url: &str, token: &str, auth_header_type: &str) -> Result<ChromaClient, String> {
-    let api_version = ChromaClient::detect_api_version(url, token, auth_header_type)
-        .await
-        .map_err(|e| e.to_string())?;
-    ChromaClient::new(url, token, auth_header_type, api_version).map_err(|e| e.to_string())
-}
-
-async fn test_connection(url: &str, token: &str, auth_header_type: &str) -> Result<(), String> {
-    // Just detect API version - if it succeeds, connection works
-    let _api_version = ChromaClient::detect_api_version(url, token, auth_header_type)
-        .await
-        .map_err(|e| e.to_string())?;
-    Ok(())
-}
-
-async fn fetch_server_info(url: &str, token: &str, auth_header_type: &str) -> Result<ServerInfo, String> {
-    let client = create_client(url, token, auth_header_type).await?;
-    client.get_server_info().await.map_err(|e| e.to_string())
-}
-
-/// Validate tenant and database, returning (tenant_exists, database_exists) on failure
-async fn validate_tenant_database(url: &str, token: &str, auth_header_type: &str, tenant: &str, database: &str) -> Result<(), (bool, bool)> {
-    let client = create_client(url, token, auth_header_type).await.map_err(|_| (false, false))?;
-    let (tenant_exists, database_exists) = client.check_tenant_database_status(tenant, database).await;
-    if tenant_exists && database_exists {
-        Ok(())
-    } else {
-        Err((tenant_exists, database_exists))
-    }
-}
-
-/// Create missing tenant and/or database
-async fn create_missing_resources(url: &str, token: &str, auth_header_type: &str, tenant: &str, database: &str, tenant_exists: bool, database_exists: bool) -> Result<(), String> {
-    let client = create_client(url, token, auth_header_type).await?;
-    
-    // Create tenant if needed
-    if !tenant_exists {
-        client.create_tenant(tenant).await.map_err(|e| e.to_string())?;
-    }
-    
-    // Create database if needed
-    if !database_exists {
-        client.create_database(tenant, database).await.map_err(|e| e.to_string())?;
-    }
-    
-    Ok(())
-}
-
-/// Fetch available databases for a tenant
-async fn fetch_databases(url: &str, token: &str, auth_header_type: &str, tenant: &str) -> Result<Vec<String>, String> {
-    let client = create_client(url, token, auth_header_type).await?;
-    let databases = client.list_databases(tenant).await.map_err(|e| e.to_string())?;
-    Ok(databases.into_iter().map(|db| db.name).collect())
-}
-
-/// Fetch available tenants
-async fn fetch_tenants(url: &str, token: &str, auth_header_type: &str) -> Result<Vec<String>, String> {
-    let client = create_client(url, token, auth_header_type).await?;
-    let tenants = client.list_tenants().await.map_err(|e| e.to_string())?;
-    Ok(tenants.into_iter().map(|t| t.name).collect())
-}
-
-async fn fetch_collections(url: &str, token: &str, auth_header_type: &str, tenant: &str, database: &str) -> Result<Vec<Collection>, String> {
-    let client = create_client(url, token, auth_header_type).await?;
-    client.list_collections(tenant, database).await.map_err(|e| e.to_string())
-}
-
-async fn fetch_documents(url: &str, token: &str, auth_header_type: &str, collection_id: &str, tenant: &str, database: &str) -> Result<Vec<Document>, String> {
-    let client = create_client(url, token, auth_header_type).await?;
-    client.get_documents(collection_id, Some(100), None, tenant, database).await.map_err(|e| e.to_string())
 }
