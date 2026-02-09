@@ -546,8 +546,14 @@ impl AppModel {
             self.collections.len().to_string(),
         );
 
-        let stats_row1 = widget::row::with_capacity(3)
+        let api_version_card = self.stat_card(
+            fl!("api-version"),
+            self.server_info.as_ref().map(|i| i.api_version.clone()).unwrap_or_else(|| "-".to_string()),
+        );
+
+        let stats_row1 = widget::row::with_capacity(4)
             .push(version_card)
+            .push(api_version_card)
             .push(heartbeat_card)
             .push(collections_card)
             .spacing(space_m);
@@ -945,28 +951,38 @@ impl menu::action::MenuAction for MenuAction {
 
 // === Async helper functions ===
 
+/// Helper to create a client with auto-detected API version
+async fn create_client(url: &str, token: &str, auth_header_type: &str) -> Result<ChromaClient, String> {
+    let api_version = ChromaClient::detect_api_version(url, token, auth_header_type)
+        .await
+        .map_err(|e| e.to_string())?;
+    ChromaClient::new(url, token, auth_header_type, api_version).map_err(|e| e.to_string())
+}
+
 async fn test_connection(url: &str, token: &str, auth_header_type: &str) -> Result<(), String> {
-    let client = ChromaClient::new(url, token, auth_header_type).map_err(|e| e.to_string())?;
-    client.heartbeat().await.map_err(|e| e.to_string())?;
+    // Just detect API version - if it succeeds, connection works
+    let _api_version = ChromaClient::detect_api_version(url, token, auth_header_type)
+        .await
+        .map_err(|e| e.to_string())?;
     Ok(())
 }
 
 async fn fetch_server_info(url: &str, token: &str, auth_header_type: &str) -> Result<ServerInfo, String> {
-    let client = ChromaClient::new(url, token, auth_header_type).map_err(|e| e.to_string())?;
+    let client = create_client(url, token, auth_header_type).await?;
     client.get_server_info().await.map_err(|e| e.to_string())
 }
 
 async fn validate_tenant_database(url: &str, token: &str, auth_header_type: &str, tenant: &str, database: &str) -> Result<(), String> {
-    let client = ChromaClient::new(url, token, auth_header_type).map_err(|e| e.to_string())?;
+    let client = create_client(url, token, auth_header_type).await?;
     client.validate_tenant_database(tenant, database).await.map_err(|e| e.to_string())
 }
 
 async fn fetch_collections(url: &str, token: &str, auth_header_type: &str, tenant: &str, database: &str) -> Result<Vec<Collection>, String> {
-    let client = ChromaClient::new(url, token, auth_header_type).map_err(|e| e.to_string())?;
+    let client = create_client(url, token, auth_header_type).await?;
     client.list_collections(tenant, database).await.map_err(|e| e.to_string())
 }
 
 async fn fetch_documents(url: &str, token: &str, auth_header_type: &str, collection_id: &str, tenant: &str, database: &str) -> Result<Vec<Document>, String> {
-    let client = ChromaClient::new(url, token, auth_header_type).map_err(|e| e.to_string())?;
+    let client = create_client(url, token, auth_header_type).await?;
     client.get_documents(collection_id, Some(100), None, tenant, database).await.map_err(|e| e.to_string())
 }

@@ -4,10 +4,28 @@ use reqwest::header::{HeaderMap, HeaderName, HeaderValue, AUTHORIZATION};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
+/// API version for ChromaDB
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ApiVersion {
+    V1,
+    #[default]
+    V2,
+}
+
+impl ApiVersion {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            ApiVersion::V1 => "v1",
+            ApiVersion::V2 => "v2",
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct ChromaClient {
     client: reqwest::Client,
     base_url: String,
+    api_version: ApiVersion,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -29,6 +47,7 @@ pub struct HeartbeatResponse {
 pub struct ServerInfo {
     pub version: String,
     pub heartbeat_ns: i64,
+    pub api_version: String,
 }
 
 /// Tenant information from ChromaDB
@@ -97,7 +116,7 @@ impl std::fmt::Display for ChromaError {
 impl ChromaClient {
     /// Create a new ChromaDB client
     /// auth_header_type: "authorization" for Bearer token, "x-chroma-token" for X-Chroma-Token header
-    pub fn new(base_url: &str, auth_token: &str, auth_header_type: &str) -> Result<Self, ChromaError> {
+    pub fn new(base_url: &str, auth_token: &str, auth_header_type: &str, api_version: ApiVersion) -> Result<Self, ChromaError> {
         let mut headers = HeaderMap::new();
         
         if !auth_token.is_empty() {
@@ -126,12 +145,34 @@ impl ChromaClient {
         // Normalize base URL (remove trailing slash)
         let base_url = base_url.trim_end_matches('/').to_string();
 
-        Ok(Self { client, base_url })
+        Ok(Self { client, base_url, api_version })
+    }
+
+    /// Detect API version by trying v2 first, then falling back to v1
+    pub async fn detect_api_version(base_url: &str, auth_token: &str, auth_header_type: &str) -> Result<ApiVersion, ChromaError> {
+        // Try v2 first
+        let client_v2 = Self::new(base_url, auth_token, auth_header_type, ApiVersion::V2)?;
+        if client_v2.heartbeat().await.is_ok() {
+            return Ok(ApiVersion::V2);
+        }
+
+        // Try v1
+        let client_v1 = Self::new(base_url, auth_token, auth_header_type, ApiVersion::V1)?;
+        if client_v1.heartbeat().await.is_ok() {
+            return Ok(ApiVersion::V1);
+        }
+
+        Err(ChromaError::ConnectionFailed("Could not connect to server with v1 or v2 API".to_string()))
+    }
+
+    /// Get the API version prefix
+    fn api_prefix(&self) -> String {
+        format!("{}/api/{}", self.base_url, self.api_version.as_str())
     }
 
     /// Check server health with heartbeat endpoint
     pub async fn heartbeat(&self) -> Result<HeartbeatResponse, ChromaError> {
-        let url = format!("{}/api/v1/heartbeat", self.base_url);
+        let url = format!("{}/heartbeat", self.api_prefix());
         
         let response = self
             .client
@@ -155,7 +196,7 @@ impl ChromaClient {
 
     /// Get server version
     pub async fn get_version(&self) -> Result<String, ChromaError> {
-        let url = format!("{}/api/v1/version", self.base_url);
+        let url = format!("{}/version", self.api_prefix());
         
         let response = self
             .client
@@ -188,12 +229,13 @@ impl ChromaClient {
         Ok(ServerInfo {
             version,
             heartbeat_ns: heartbeat.nanosecond_heartbeat,
+            api_version: self.api_version.as_str().to_string(),
         })
     }
 
     /// Check if a tenant exists
     pub async fn get_tenant(&self, tenant: &str) -> Result<Tenant, ChromaError> {
-        let url = format!("{}/api/v1/tenants/{}", self.base_url, tenant);
+        let url = format!("{}/tenants/{}", self.api_prefix(), tenant);
         
         let response = self
             .client
@@ -219,10 +261,16 @@ impl ChromaClient {
 
     /// Check if a database exists within a tenant
     pub async fn get_database(&self, tenant: &str, database: &str) -> Result<Database, ChromaError> {
-        let url = format!(
-            "{}/api/v1/databases/{}?tenant={}",
-            self.base_url, database, tenant
-        );
+        let url = match self.api_version {
+            ApiVersion::V1 => format!(
+                "{}/databases/{}?tenant={}",
+                self.api_prefix(), database, tenant
+            ),
+            ApiVersion::V2 => format!(
+                "{}/tenants/{}/databases/{}",
+                self.api_prefix(), tenant, database
+            ),
+        };
         
         let response = self
             .client
@@ -255,10 +303,16 @@ impl ChromaClient {
 
     /// List all collections for a specific tenant and database
     pub async fn list_collections(&self, tenant: &str, database: &str) -> Result<Vec<Collection>, ChromaError> {
-        let url = format!(
-            "{}/api/v1/databases/{}/collections?tenant={}",
-            self.base_url, database, tenant
-        );
+        let url = match self.api_version {
+            ApiVersion::V1 => format!(
+                "{}/databases/{}/collections?tenant={}",
+                self.api_prefix(), database, tenant
+            ),
+            ApiVersion::V2 => format!(
+                "{}/tenants/{}/databases/{}/collections",
+                self.api_prefix(), tenant, database
+            ),
+        };
         
         let response = self
             .client
@@ -291,10 +345,16 @@ impl ChromaClient {
         tenant: &str,
         database: &str,
     ) -> Result<Vec<Document>, ChromaError> {
-        let url = format!(
-            "{}/api/v1/databases/{}/collections/{}/get?tenant={}",
-            self.base_url, database, collection_id, tenant
-        );
+        let url = match self.api_version {
+            ApiVersion::V1 => format!(
+                "{}/databases/{}/collections/{}/get?tenant={}",
+                self.api_prefix(), database, collection_id, tenant
+            ),
+            ApiVersion::V2 => format!(
+                "{}/tenants/{}/databases/{}/collections/{}/get",
+                self.api_prefix(), tenant, database, collection_id
+            ),
+        };
         
         let request = GetDocumentsRequest {
             ids: None,

@@ -46,6 +46,7 @@ status-error = Error
 
 # Dashboard page
 server-version = Server Version
+api-version = API Version
 heartbeat = Heartbeat
 current-tenant = Current Tenant
 current-database = Current Database
