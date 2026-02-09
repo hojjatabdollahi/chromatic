@@ -301,6 +301,119 @@ impl ChromaClient {
         Ok(())
     }
 
+    /// List all databases for a tenant
+    pub async fn list_databases(&self, tenant: &str) -> Result<Vec<Database>, ChromaError> {
+        let url = match self.api_version {
+            ApiVersion::V1 => format!(
+                "{}/databases?tenant={}",
+                self.api_prefix(), tenant
+            ),
+            ApiVersion::V2 => format!(
+                "{}/tenants/{}/databases",
+                self.api_prefix(), tenant
+            ),
+        };
+        
+        let response = self
+            .client
+            .get(&url)
+            .send()
+            .await
+            .map_err(|e| ChromaError::ConnectionFailed(e.to_string()))?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let body = response.text().await.unwrap_or_default();
+            return Err(ChromaError::RequestFailed(format!(
+                "Failed to list databases for tenant '{}': {} - {}",
+                tenant, status, body
+            )));
+        }
+
+        response
+            .json::<Vec<Database>>()
+            .await
+            .map_err(|e| ChromaError::InvalidResponse(e.to_string()))
+    }
+
+    /// Create a new tenant
+    pub async fn create_tenant(&self, tenant: &str) -> Result<Tenant, ChromaError> {
+        let url = format!("{}/tenants", self.api_prefix());
+        
+        let body = serde_json::json!({ "name": tenant });
+        
+        let response = self
+            .client
+            .post(&url)
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| ChromaError::ConnectionFailed(e.to_string()))?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let body = response.text().await.unwrap_or_default();
+            return Err(ChromaError::RequestFailed(format!(
+                "Failed to create tenant '{}': {} - {}",
+                tenant, status, body
+            )));
+        }
+
+        // Return the tenant info - some servers return empty response on create
+        Ok(Tenant { name: tenant.to_string() })
+    }
+
+    /// Create a new database within a tenant
+    pub async fn create_database(&self, tenant: &str, database: &str) -> Result<Database, ChromaError> {
+        let url = match self.api_version {
+            ApiVersion::V1 => format!(
+                "{}/databases?tenant={}",
+                self.api_prefix(), tenant
+            ),
+            ApiVersion::V2 => format!(
+                "{}/tenants/{}/databases",
+                self.api_prefix(), tenant
+            ),
+        };
+        
+        let body = serde_json::json!({ "name": database });
+        
+        let response = self
+            .client
+            .post(&url)
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| ChromaError::ConnectionFailed(e.to_string()))?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let body = response.text().await.unwrap_or_default();
+            return Err(ChromaError::RequestFailed(format!(
+                "Failed to create database '{}' in tenant '{}': {} - {}",
+                database, tenant, status, body
+            )));
+        }
+
+        // Return the database info
+        Ok(Database { 
+            id: String::new(), // ID may be assigned by server
+            name: database.to_string(),
+            tenant: tenant.to_string(),
+        })
+    }
+
+    /// Check what's missing (tenant, database, or both) and return detailed info
+    pub async fn check_tenant_database_status(&self, tenant: &str, database: &str) -> (bool, bool) {
+        let tenant_exists = self.get_tenant(tenant).await.is_ok();
+        let database_exists = if tenant_exists {
+            self.get_database(tenant, database).await.is_ok()
+        } else {
+            false
+        };
+        (tenant_exists, database_exists)
+    }
+
     /// List all collections for a specific tenant and database
     pub async fn list_collections(&self, tenant: &str, database: &str) -> Result<Vec<Collection>, ChromaError> {
         let url = match self.api_version {

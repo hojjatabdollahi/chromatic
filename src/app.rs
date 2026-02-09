@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 use crate::api::{ChromaClient, Collection, Document, ServerInfo};
-use crate::config::Config;
+use crate::config::{Config, ServerConfig};
 use crate::fl;
 use cosmic::app::context_drawer;
 use cosmic::cosmic_config::{self, CosmicConfigEntry};
@@ -37,6 +37,8 @@ pub struct AppModel {
     collections: Vec<Collection>,
     /// Connection status
     connection_status: ConnectionStatus,
+    /// Temporary server name input (before saving)
+    server_name_input: String,
     /// Temporary server URL input (before saving)
     server_url_input: String,
     /// Temporary auth token input (before saving)
@@ -47,6 +49,8 @@ pub struct AppModel {
     tenant_input: String,
     /// Temporary database input (before saving)
     database_input: String,
+    /// Index of server being edited (None for new server dialog)
+    editing_server_index: Option<usize>,
     /// Currently selected collection
     selected_collection: Option<Collection>,
     /// Documents in the selected collection
@@ -55,6 +59,17 @@ pub struct AppModel {
     settings_status: SettingsStatus,
     /// Server info for dashboard
     server_info: Option<ServerInfo>,
+    /// Available databases for the current tenant (for selection)
+    available_databases: Vec<String>,
+}
+
+/// What's missing during validation
+#[derive(Debug, Clone)]
+pub struct ValidationMissing {
+    pub tenant_exists: bool,
+    pub database_exists: bool,
+    pub tenant_name: String,
+    pub database_name: String,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -64,6 +79,10 @@ pub enum SettingsStatus {
     Validating,
     Saved,
     Error(String),
+    /// Tenant and/or database don't exist - offer to create them
+    MissingResources(ValidationMissing),
+    /// Creating tenant/database in progress
+    Creating,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -84,6 +103,7 @@ pub enum Message {
     UpdateConfig(Config),
     
     // Settings inputs
+    ServerNameChanged(String),
     ServerUrlChanged(String),
     AuthTokenChanged(String),
     AuthHeaderTypeChanged(String),
@@ -91,7 +111,19 @@ pub enum Message {
     DatabaseChanged(String),
     SaveSettings,
     ValidateAndSaveSettings,
-    SettingsValidationResult(Result<(), String>),
+    /// Result contains (tenant_exists, database_exists) for detailed feedback
+    SettingsValidationResult(Result<(), (bool, bool)>),
+    /// Create missing tenant and/or database
+    CreateMissingResources,
+    CreateResourcesResult(Result<(), String>),
+    /// Fetch available databases for current tenant
+    FetchDatabases,
+    DatabasesLoaded(Result<Vec<String>, String>),
+    
+    // Server management
+    SelectServer(usize),
+    AddNewServer,
+    DeleteServer(usize),
     
     // Connection & data
     TestConnection,
@@ -174,6 +206,9 @@ impl cosmic::Application for AppModel {
             })
             .unwrap_or_default();
 
+        // Get active server config for initializing input fields
+        let active = config.active_config();
+        
         // Construct the app model with the runtime's core.
         let mut app = AppModel {
             core,
@@ -181,11 +216,13 @@ impl cosmic::Application for AppModel {
             about,
             nav,
             key_binds: HashMap::new(),
-            server_url_input: config.server_url.clone(),
-            auth_token_input: config.auth_token.clone(),
-            auth_header_type_input: config.auth_header_type.clone(),
-            tenant_input: config.tenant.clone(),
-            database_input: config.database.clone(),
+            server_name_input: active.name.clone(),
+            server_url_input: active.server_url.clone(),
+            auth_token_input: active.auth_token.clone(),
+            auth_header_type_input: active.auth_header_type.clone(),
+            tenant_input: active.tenant.clone(),
+            database_input: active.database.clone(),
+            editing_server_index: Some(config.active_server),
             config,
             config_context,
             collections: Vec::new(),
@@ -194,6 +231,7 @@ impl cosmic::Application for AppModel {
             documents: Vec::new(),
             settings_status: SettingsStatus::Idle,
             server_info: None,
+            available_databases: Vec::new(),
         };
 
         // Create a startup command that sets the window title.
@@ -282,11 +320,14 @@ impl cosmic::Application for AppModel {
 
             Message::UpdateConfig(config) => {
                 self.config = config;
-                self.server_url_input = self.config.server_url.clone();
-                self.auth_token_input = self.config.auth_token.clone();
-                self.auth_header_type_input = self.config.auth_header_type.clone();
-                self.tenant_input = self.config.tenant.clone();
-                self.database_input = self.config.database.clone();
+                let active = self.config.active_config();
+                self.server_name_input = active.name.clone();
+                self.server_url_input = active.server_url.clone();
+                self.auth_token_input = active.auth_token.clone();
+                self.auth_header_type_input = active.auth_header_type.clone();
+                self.tenant_input = active.tenant.clone();
+                self.database_input = active.database.clone();
+                self.editing_server_index = Some(self.config.active_server);
             }
 
             Message::LaunchUrl(url) => match open::that_detached(&url) {
@@ -317,13 +358,91 @@ impl cosmic::Application for AppModel {
                 self.database_input = database;
             }
 
+            Message::ServerNameChanged(name) => {
+                self.server_name_input = name;
+            }
+
+            Message::SelectServer(index) => {
+                if self.config.switch_active_server(index) {
+                    // Save the config with new active server
+                    if let Some(ref context) = self.config_context {
+                        let _ = self.config.write_entry(context);
+                    }
+                    // Update input fields with the new server's config
+                    let active = self.config.active_config();
+                    self.server_name_input = active.name.clone();
+                    self.server_url_input = active.server_url.clone();
+                    self.auth_token_input = active.auth_token.clone();
+                    self.auth_header_type_input = active.auth_header_type.clone();
+                    self.tenant_input = active.tenant.clone();
+                    self.database_input = active.database.clone();
+                    self.editing_server_index = Some(index);
+                    // Clear cached data from previous server
+                    self.collections.clear();
+                    self.server_info = None;
+                    self.connection_status = ConnectionStatus::Disconnected;
+                }
+            }
+
+            Message::AddNewServer => {
+                // Create a new server with default values and a unique name
+                let new_name = format!("Server {}", self.config.servers.len() + 1);
+                let new_server = ServerConfig::new(&new_name);
+                let new_index = self.config.add_server(new_server);
+                // Switch to the new server
+                self.config.switch_active_server(new_index);
+                // Save the config
+                if let Some(ref context) = self.config_context {
+                    let _ = self.config.write_entry(context);
+                }
+                // Update input fields
+                let active = self.config.active_config();
+                self.server_name_input = active.name.clone();
+                self.server_url_input = active.server_url.clone();
+                self.auth_token_input = active.auth_token.clone();
+                self.auth_header_type_input = active.auth_header_type.clone();
+                self.tenant_input = active.tenant.clone();
+                self.database_input = active.database.clone();
+                self.editing_server_index = Some(new_index);
+                // Clear cached data
+                self.collections.clear();
+                self.server_info = None;
+                self.connection_status = ConnectionStatus::Disconnected;
+            }
+
+            Message::DeleteServer(index) => {
+                if self.config.remove_server(index) {
+                    // Save the config
+                    if let Some(ref context) = self.config_context {
+                        let _ = self.config.write_entry(context);
+                    }
+                    // Update input fields with the (possibly new) active server
+                    let active = self.config.active_config();
+                    self.server_name_input = active.name.clone();
+                    self.server_url_input = active.server_url.clone();
+                    self.auth_token_input = active.auth_token.clone();
+                    self.auth_header_type_input = active.auth_header_type.clone();
+                    self.tenant_input = active.tenant.clone();
+                    self.database_input = active.database.clone();
+                    self.editing_server_index = Some(self.config.active_server);
+                    // Clear cached data
+                    self.collections.clear();
+                    self.server_info = None;
+                    self.connection_status = ConnectionStatus::Disconnected;
+                }
+            }
+
             Message::SaveSettings => {
                 // Direct save without validation (internal use)
-                self.config.server_url = self.server_url_input.clone();
-                self.config.auth_token = self.auth_token_input.clone();
-                self.config.auth_header_type = self.auth_header_type_input.clone();
-                self.config.tenant = self.tenant_input.clone();
-                self.config.database = self.database_input.clone();
+                {
+                    let active = self.config.active_config_mut();
+                    active.name = self.server_name_input.clone();
+                    active.server_url = self.server_url_input.clone();
+                    active.auth_token = self.auth_token_input.clone();
+                    active.auth_header_type = self.auth_header_type_input.clone();
+                    active.tenant = self.tenant_input.clone();
+                    active.database = self.database_input.clone();
+                }
                 
                 if let Some(ref context) = self.config_context {
                     if let Err(e) = self.config.write_entry(context) {
@@ -355,8 +474,73 @@ impl cosmic::Application for AppModel {
                         // Validation passed, save the settings
                         return self.update(Message::SaveSettings);
                     }
+                    Err((tenant_exists, database_exists)) => {
+                        // Show what's missing and offer to create
+                        self.settings_status = SettingsStatus::MissingResources(ValidationMissing {
+                            tenant_exists,
+                            database_exists,
+                            tenant_name: self.tenant_input.clone(),
+                            database_name: self.database_input.clone(),
+                        });
+                    }
+                }
+            }
+
+            Message::CreateMissingResources => {
+                // Extract the missing info before reassigning settings_status
+                let missing_info = if let SettingsStatus::MissingResources(missing) = &self.settings_status {
+                    Some((missing.tenant_exists, missing.database_exists))
+                } else {
+                    None
+                };
+                
+                if let Some((tenant_exists, database_exists)) = missing_info {
+                    self.settings_status = SettingsStatus::Creating;
+                    let url = self.server_url_input.clone();
+                    let token = self.auth_token_input.clone();
+                    let auth_header_type = self.auth_header_type_input.clone();
+                    let tenant = self.tenant_input.clone();
+                    let database = self.database_input.clone();
+                    
+                    return cosmic::task::future(async move {
+                        let result = create_missing_resources(&url, &token, &auth_header_type, &tenant, &database, tenant_exists, database_exists).await;
+                        cosmic::Action::App(Message::CreateResourcesResult(result))
+                    });
+                }
+            }
+
+            Message::CreateResourcesResult(result) => {
+                match result {
+                    Ok(()) => {
+                        // Resources created successfully, now save settings
+                        return self.update(Message::SaveSettings);
+                    }
                     Err(e) => {
-                        self.settings_status = SettingsStatus::Error(e);
+                        self.settings_status = SettingsStatus::Error(format!("Failed to create resources: {}", e));
+                    }
+                }
+            }
+
+            Message::FetchDatabases => {
+                let url = self.server_url_input.clone();
+                let token = self.auth_token_input.clone();
+                let auth_header_type = self.auth_header_type_input.clone();
+                let tenant = self.tenant_input.clone();
+                
+                return cosmic::task::future(async move {
+                    let result = fetch_databases(&url, &token, &auth_header_type, &tenant).await;
+                    cosmic::Action::App(Message::DatabasesLoaded(result))
+                });
+            }
+
+            Message::DatabasesLoaded(result) => {
+                match result {
+                    Ok(databases) => {
+                        self.available_databases = databases;
+                    }
+                    Err(_) => {
+                        // Silently fail - databases list is optional
+                        self.available_databases.clear();
                     }
                 }
             }
@@ -386,11 +570,12 @@ impl cosmic::Application for AppModel {
 
             Message::FetchCollections => {
                 self.connection_status = ConnectionStatus::Connecting;
-                let url = self.config.server_url.clone();
-                let token = self.config.auth_token.clone();
-                let auth_header_type = self.config.auth_header_type.clone();
-                let tenant = self.config.tenant.clone();
-                let database = self.config.database.clone();
+                let active = self.config.active_config();
+                let url = active.server_url.clone();
+                let token = active.auth_token.clone();
+                let auth_header_type = active.auth_header_type.clone();
+                let tenant = active.tenant.clone();
+                let database = active.database.clone();
                 
                 return cosmic::task::future(async move {
                     let result = fetch_collections(&url, &token, &auth_header_type, &tenant, &database).await;
@@ -425,12 +610,13 @@ impl cosmic::Application for AppModel {
             Message::FetchDocuments => {
                 if let Some(ref collection) = self.selected_collection {
                     self.connection_status = ConnectionStatus::Connecting;
-                    let url = self.config.server_url.clone();
-                    let token = self.config.auth_token.clone();
-                    let auth_header_type = self.config.auth_header_type.clone();
+                    let active = self.config.active_config();
+                    let url = active.server_url.clone();
+                    let token = active.auth_token.clone();
+                    let auth_header_type = active.auth_header_type.clone();
                     let collection_id = collection.id.clone();
-                    let tenant = self.config.tenant.clone();
-                    let database = self.config.database.clone();
+                    let tenant = active.tenant.clone();
+                    let database = active.database.clone();
                     
                     return cosmic::task::future(async move {
                         let result = fetch_documents(&url, &token, &auth_header_type, &collection_id, &tenant, &database).await;
@@ -453,9 +639,10 @@ impl cosmic::Application for AppModel {
 
             Message::FetchServerInfo => {
                 self.connection_status = ConnectionStatus::Connecting;
-                let url = self.config.server_url.clone();
-                let token = self.config.auth_token.clone();
-                let auth_header_type = self.config.auth_header_type.clone();
+                let active = self.config.active_config();
+                let url = active.server_url.clone();
+                let token = active.auth_token.clone();
+                let auth_header_type = active.auth_header_type.clone();
                 
                 return cosmic::task::future(async move {
                     let result = fetch_server_info(&url, &token, &auth_header_type).await;
@@ -531,14 +718,15 @@ impl AppModel {
             }).unwrap_or_else(|| "-".to_string()),
         );
 
+        let active = self.config.active_config();
         let tenant_card = self.stat_card(
             fl!("current-tenant"),
-            self.config.tenant.clone(),
+            active.tenant.clone(),
         );
 
         let database_card = self.stat_card(
             fl!("current-database"),
-            self.config.database.clone(),
+            active.database.clone(),
         );
 
         let collections_card = self.stat_card(
@@ -785,9 +973,44 @@ impl AppModel {
     fn view_settings(&self, space_s: u16, space_m: u16) -> Element<'_, Message> {
         let header = widget::text::title1(fl!("settings"));
 
+        // Server selection section - show list of saved servers
+        let mut server_buttons = widget::row::with_capacity(self.config.servers.len() + 1);
+        for (index, server) in self.config.servers.iter().enumerate() {
+            let is_active = index == self.config.active_server;
+            let button = widget::button::text(&server.name)
+                .class(if is_active {
+                    cosmic::theme::Button::Suggested
+                } else {
+                    cosmic::theme::Button::Standard
+                })
+                .on_press(Message::SelectServer(index));
+            server_buttons = server_buttons.push(button);
+        }
+        // Add new server button
+        server_buttons = server_buttons
+            .push(widget::button::icon(icon::from_name("list-add-symbolic")).on_press(Message::AddNewServer))
+            .spacing(space_s);
+
+        let servers_section = cosmic::widget::settings::section()
+            .title(fl!("servers"))
+            .add(
+                cosmic::widget::settings::item::builder(fl!("saved-servers"))
+                    .description(fl!("saved-servers-description"))
+                    .control(server_buttons)
+            );
+
         // Server configuration section
-        let server_section = cosmic::widget::settings::section()
+        let mut server_section = cosmic::widget::settings::section()
             .title(fl!("server-config"))
+            .add(
+                cosmic::widget::settings::item::builder(fl!("server-name"))
+                    .description(fl!("server-name-description"))
+                    .control(
+                        widget::text_input(fl!("server-name-placeholder"), &self.server_name_input)
+                            .on_input(Message::ServerNameChanged)
+                            .width(Length::Fixed(300.0))
+                    )
+            )
             .add(
                 cosmic::widget::settings::item::builder(fl!("server-url"))
                     .description(fl!("server-url-description"))
@@ -851,6 +1074,18 @@ impl AppModel {
                     )
             );
 
+        // Add delete button if there's more than one server
+        if self.config.servers.len() > 1 {
+            server_section = server_section.add(
+                cosmic::widget::settings::item::builder(fl!("delete-server"))
+                    .description(fl!("delete-server-description"))
+                    .control(
+                        widget::button::destructive(fl!("delete"))
+                            .on_press(Message::DeleteServer(self.config.active_server))
+                    )
+            );
+        }
+
         // Connection status
         let connection_status_text = match &self.connection_status {
             ConnectionStatus::Disconnected => fl!("status-disconnected"),
@@ -860,31 +1095,51 @@ impl AppModel {
         };
 
         // Settings save status
-        let (save_button_label, save_status_text) = match &self.settings_status {
-            SettingsStatus::Idle => (fl!("save"), String::new()),
-            SettingsStatus::Validating => (fl!("validating"), fl!("validating-tenant-db")),
-            SettingsStatus::Saved => (fl!("save"), fl!("settings-saved")),
-            SettingsStatus::Error(e) => (fl!("save"), e.clone()),
+        let (save_button_label, save_status_text, show_create_button) = match &self.settings_status {
+            SettingsStatus::Idle => (fl!("save"), String::new(), false),
+            SettingsStatus::Validating => (fl!("validating"), fl!("validating-tenant-db"), false),
+            SettingsStatus::Saved => (fl!("save"), fl!("settings-saved"), false),
+            SettingsStatus::Error(e) => (fl!("save"), e.clone(), false),
+            SettingsStatus::MissingResources(missing) => {
+                let mut missing_parts = Vec::new();
+                if !missing.tenant_exists {
+                    missing_parts.push(format!("{} '{}'", fl!("tenant"), missing.tenant_name));
+                }
+                if !missing.database_exists {
+                    missing_parts.push(format!("{} '{}'", fl!("database"), missing.database_name));
+                }
+                let msg = format!("{}: {}", fl!("missing-resources"), missing_parts.join(", "));
+                (fl!("save"), msg, true)
+            }
+            SettingsStatus::Creating => (fl!("creating"), fl!("creating-resources"), false),
         };
 
-        let save_button = if matches!(self.settings_status, SettingsStatus::Validating) {
+        let save_button = if matches!(self.settings_status, SettingsStatus::Validating | SettingsStatus::Creating) {
             widget::button::standard(save_button_label)
         } else {
             widget::button::standard(save_button_label).on_press(Message::ValidateAndSaveSettings)
         };
 
-        let mut buttons = widget::row::with_capacity(4)
+        let mut buttons = widget::row::with_capacity(5)
             .push(save_button)
             .push(widget::button::suggested(fl!("test-connection")).on_press(Message::TestConnection))
             .push(widget::text::body(connection_status_text))
             .spacing(space_s)
             .align_y(Alignment::Center);
 
+        // Show create button if resources are missing
+        if show_create_button {
+            buttons = buttons.push(
+                widget::button::suggested(fl!("create-missing"))
+                    .on_press(Message::CreateMissingResources)
+            );
+        }
+
         // Show save status if there's one
         if !save_status_text.is_empty() {
             let status_style = match &self.settings_status {
                 SettingsStatus::Saved => cosmic::theme::Button::Suggested,
-                SettingsStatus::Error(_) => cosmic::theme::Button::Destructive,
+                SettingsStatus::Error(_) | SettingsStatus::MissingResources(_) => cosmic::theme::Button::Destructive,
                 _ => cosmic::theme::Button::Standard,
             };
             buttons = buttons.push(
@@ -893,14 +1148,17 @@ impl AppModel {
             );
         }
 
-        widget::column::with_capacity(3)
-            .push(header)
-            .push(server_section)
-            .push(buttons)
-            .spacing(space_m)
-            .width(Length::Fill)
-            .height(Length::Fill)
-            .into()
+        widget::scrollable(
+            widget::column::with_capacity(4)
+                .push(header)
+                .push(servers_section)
+                .push(server_section)
+                .push(buttons)
+                .spacing(space_m)
+                .width(Length::Fill)
+        )
+        .height(Length::Fill)
+        .into()
     }
 
     /// Connection status badge widget
@@ -972,9 +1230,39 @@ async fn fetch_server_info(url: &str, token: &str, auth_header_type: &str) -> Re
     client.get_server_info().await.map_err(|e| e.to_string())
 }
 
-async fn validate_tenant_database(url: &str, token: &str, auth_header_type: &str, tenant: &str, database: &str) -> Result<(), String> {
+/// Validate tenant and database, returning (tenant_exists, database_exists) on failure
+async fn validate_tenant_database(url: &str, token: &str, auth_header_type: &str, tenant: &str, database: &str) -> Result<(), (bool, bool)> {
+    let client = create_client(url, token, auth_header_type).await.map_err(|_| (false, false))?;
+    let (tenant_exists, database_exists) = client.check_tenant_database_status(tenant, database).await;
+    if tenant_exists && database_exists {
+        Ok(())
+    } else {
+        Err((tenant_exists, database_exists))
+    }
+}
+
+/// Create missing tenant and/or database
+async fn create_missing_resources(url: &str, token: &str, auth_header_type: &str, tenant: &str, database: &str, tenant_exists: bool, database_exists: bool) -> Result<(), String> {
     let client = create_client(url, token, auth_header_type).await?;
-    client.validate_tenant_database(tenant, database).await.map_err(|e| e.to_string())
+    
+    // Create tenant if needed
+    if !tenant_exists {
+        client.create_tenant(tenant).await.map_err(|e| e.to_string())?;
+    }
+    
+    // Create database if needed
+    if !database_exists {
+        client.create_database(tenant, database).await.map_err(|e| e.to_string())?;
+    }
+    
+    Ok(())
+}
+
+/// Fetch available databases for a tenant
+async fn fetch_databases(url: &str, token: &str, auth_header_type: &str, tenant: &str) -> Result<Vec<String>, String> {
+    let client = create_client(url, token, auth_header_type).await?;
+    let databases = client.list_databases(tenant).await.map_err(|e| e.to_string())?;
+    Ok(databases.into_iter().map(|db| db.name).collect())
 }
 
 async fn fetch_collections(url: &str, token: &str, auth_header_type: &str, tenant: &str, database: &str) -> Result<Vec<Collection>, String> {

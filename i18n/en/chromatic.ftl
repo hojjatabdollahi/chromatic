@@ -19,7 +19,13 @@ connected = Connected
 error = Error
 
 # Settings page
+servers = Servers
+saved-servers = Saved Servers
+saved-servers-description = Click to switch between server configurations
 server-config = Server Configuration
+server-name = Server Name
+server-name-description = A display name for this server configuration
+server-name-placeholder = My Server
 server-url = Server URL
 server-url-description = The URL of your ChromaDB server
 server-url-placeholder = http://localhost:8000
@@ -34,6 +40,9 @@ tenant-placeholder = default_tenant
 database = Database
 database-description = The database name within the tenant
 database-placeholder = default_database
+delete-server = Delete Server
+delete-server-description = Remove this server configuration
+delete = Delete
 save = Save
 validating = Validating...
 validating-tenant-db = Validating tenant and database...
@@ -43,6 +52,10 @@ status-disconnected = Not connected
 status-connecting = Connecting...
 status-connected = Connected successfully
 status-error = Error
+missing-resources = Missing resources
+create-missing = Create Missing
+creating = Creating...
+creating-resources = Creating tenant and/or database...
 
 # Dashboard page
 server-version = Server Version
