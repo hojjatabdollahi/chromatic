@@ -12,8 +12,11 @@ use super::widgets::connection_status_badge;
 
 /// View for the Dashboard page
 pub fn view(app: &AppModel, _space_s: u16, space_m: u16) -> Element<'_, Message> {
-    let header = widget::row::with_capacity(2)
+    let active = app.config.active_config();
+
+    let header = widget::row::with_capacity(3)
         .push(widget::text::title1(fl!("dashboard")))
+        .push(widget::text::title4(&active.name))
         .push(connection_status_badge(&app.connection_status))
         .align_y(Alignment::Center)
         .spacing(space_m);
@@ -22,6 +25,8 @@ pub fn view(app: &AppModel, _space_s: u16, space_m: u16) -> Element<'_, Message>
         widget::button::standard(fl!("refresh")).on_press(Message::FetchServerInfo);
 
     // Stats cards
+    let server_name_card = stat_card(fl!("current-server"), active.name.clone());
+
     let version_card = stat_card(
         fl!("server-version"),
         app.server_info
@@ -42,7 +47,6 @@ pub fn view(app: &AppModel, _space_s: u16, space_m: u16) -> Element<'_, Message>
             .unwrap_or_else(|| "-".to_string()),
     );
 
-    let active = app.config.active_config();
     let tenant_card = stat_card(fl!("current-tenant"), active.tenant.clone());
 
     let database_card = stat_card(fl!("current-database"), active.database.clone());
@@ -57,17 +61,18 @@ pub fn view(app: &AppModel, _space_s: u16, space_m: u16) -> Element<'_, Message>
             .unwrap_or_else(|| "-".to_string()),
     );
 
-    let stats_row1 = widget::row::with_capacity(4)
-        .push(version_card)
-        .push(api_version_card)
-        .push(heartbeat_card)
-        .push(collections_card)
-        .spacing(space_m);
-
-    let stats_row2 = widget::row::with_capacity(2)
-        .push(tenant_card)
-        .push(database_card)
-        .spacing(space_m);
+    // Use flex_row for responsive wrapping on small windows
+    let stats_grid = widget::flex_row(vec![
+        server_name_card,
+        version_card,
+        api_version_card,
+        heartbeat_card,
+        collections_card,
+        tenant_card,
+        database_card,
+    ])
+    .row_spacing(space_m)
+    .column_spacing(space_m);
 
     let content: Element<'_, Message> = match &app.connection_status {
         ConnectionStatus::Disconnected | ConnectionStatus::Error(_) => {
@@ -82,10 +87,9 @@ pub fn view(app: &AppModel, _space_s: u16, space_m: u16) -> Element<'_, Message>
                 .spacing(space_m)
                 .into()
         }
-        _ => widget::column::with_capacity(3)
+        _ => widget::column::with_capacity(2)
             .push(refresh_button)
-            .push(stats_row1)
-            .push(stats_row2)
+            .push(stats_grid)
             .spacing(space_m)
             .into(),
     };
@@ -108,7 +112,7 @@ fn stat_card(label: String, value: String) -> Element<'static, Message> {
             .spacing(4),
     )
     .padding(cosmic::theme::spacing().space_s)
-    .width(Length::FillPortion(1))
+    .width(Length::Fixed(180.0))
     .class(cosmic::style::Container::Card)
     .into()
 }

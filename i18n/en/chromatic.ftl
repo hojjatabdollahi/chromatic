@@ -62,6 +62,7 @@ load-tenants = Load Tenants
 load-databases = Load Databases
 
 # Dashboard page
+current-server = Current Server
 server-version = Server Version
 api-version = API Version
 heartbeat = Heartbeat
