@@ -2,4 +2,4 @@
 
 mod chroma;
 
-pub use chroma::{ChromaClient, Collection};
+pub use chroma::{ChromaClient, Collection, Document};

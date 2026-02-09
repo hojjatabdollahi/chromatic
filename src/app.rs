@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 
-use crate::api::{ChromaClient, Collection};
+use crate::api::{ChromaClient, Collection, Document};
 use crate::config::Config;
 use crate::fl;
 use cosmic::app::context_drawer;
@@ -43,6 +43,10 @@ pub struct AppModel {
     auth_token_input: String,
     /// Temporary auth header type input (before saving)
     auth_header_type_input: String,
+    /// Currently selected collection
+    selected_collection: Option<Collection>,
+    /// Documents in the selected collection
+    documents: Vec<Document>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -73,6 +77,12 @@ pub enum Message {
     ConnectionResult(Result<(), String>),
     FetchCollections,
     CollectionsLoaded(Result<Vec<Collection>, String>),
+    
+    // Collection & documents
+    SelectCollection(Collection),
+    BackToCollections,
+    FetchDocuments,
+    DocumentsLoaded(Result<Vec<Document>, String>),
 }
 
 /// Create a COSMIC application from the app model
@@ -148,6 +158,8 @@ impl cosmic::Application for AppModel {
             config_context,
             collections: Vec::new(),
             connection_status: ConnectionStatus::Disconnected,
+            selected_collection: None,
+            documents: Vec::new(),
         };
 
         // Create a startup command that sets the window title.
@@ -195,7 +207,14 @@ impl cosmic::Application for AppModel {
         let space_m = cosmic::theme::spacing().space_m;
         
         let content: Element<_> = match self.nav.active_data::<Page>().unwrap_or(&Page::Collections) {
-            Page::Collections => self.view_collections(space_s, space_m),
+            Page::Collections => {
+                // Show documents view if a collection is selected
+                if self.selected_collection.is_some() {
+                    self.view_documents(space_s, space_m)
+                } else {
+                    self.view_collections(space_s, space_m)
+                }
+            }
             Page::Settings => self.view_settings(space_s, space_m),
         };
 
@@ -311,6 +330,45 @@ impl cosmic::Application for AppModel {
                     }
                 }
             }
+
+            Message::SelectCollection(collection) => {
+                self.selected_collection = Some(collection);
+                self.documents.clear();
+                // Automatically fetch documents when selecting a collection
+                return self.update(Message::FetchDocuments);
+            }
+
+            Message::BackToCollections => {
+                self.selected_collection = None;
+                self.documents.clear();
+            }
+
+            Message::FetchDocuments => {
+                if let Some(ref collection) = self.selected_collection {
+                    self.connection_status = ConnectionStatus::Connecting;
+                    let url = self.config.server_url.clone();
+                    let token = self.config.auth_token.clone();
+                    let auth_header_type = self.config.auth_header_type.clone();
+                    let collection_id = collection.id.clone();
+                    
+                    return cosmic::task::future(async move {
+                        let result = fetch_documents(&url, &token, &auth_header_type, &collection_id).await;
+                        cosmic::Action::App(Message::DocumentsLoaded(result))
+                    });
+                }
+            }
+
+            Message::DocumentsLoaded(result) => {
+                match result {
+                    Ok(documents) => {
+                        self.documents = documents;
+                        self.connection_status = ConnectionStatus::Connected;
+                    }
+                    Err(e) => {
+                        self.connection_status = ConnectionStatus::Error(e);
+                    }
+                }
+            }
         }
         Task::none()
     }
@@ -374,15 +432,121 @@ impl AppModel {
             let mut list_column = widget::column::with_capacity(self.collections.len());
             
             for collection in &self.collections {
-                let item = widget::container(
-                    widget::column::with_capacity(2)
-                        .push(widget::text::title4(&collection.name))
-                        .push(widget::text::caption(format!("ID: {}", collection.id)))
-                        .spacing(4)
+                let collection_clone = collection.clone();
+                let item = widget::mouse_area(
+                    widget::container(
+                        widget::column::with_capacity(2)
+                            .push(widget::text::title4(&collection.name))
+                            .push(widget::text::caption(format!("ID: {}", collection.id)))
+                            .spacing(4)
+                    )
+                    .padding(space_s)
+                    .width(Length::Fill)
+                    .class(cosmic::style::Container::Card)
                 )
-                .padding(space_s)
+                .on_press(Message::SelectCollection(collection_clone));
+                
+                list_column = list_column.push(item);
+            }
+            
+            widget::scrollable(list_column.spacing(space_s))
                 .width(Length::Fill)
-                .class(cosmic::style::Container::Card);
+                .height(Length::Fill)
+                .into()
+        };
+
+        widget::column::with_capacity(3)
+            .push(header)
+            .push(toolbar)
+            .push(content)
+            .spacing(space_m)
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .into()
+    }
+
+    /// View for the Documents page (when a collection is selected)
+    fn view_documents(&self, space_s: u16, space_m: u16) -> Element<'_, Message> {
+        let collection_name = self
+            .selected_collection
+            .as_ref()
+            .map(|c| c.name.as_str())
+            .unwrap_or("Unknown");
+
+        let back_button = widget::button::icon(icon::from_name("go-previous-symbolic"))
+            .on_press(Message::BackToCollections);
+
+        let header = widget::row::with_capacity(3)
+            .push(back_button)
+            .push(widget::text::title1(collection_name))
+            .push(self.connection_status_badge())
+            .align_y(Alignment::Center)
+            .spacing(space_m);
+
+        let refresh_button = widget::button::standard(fl!("refresh"))
+            .on_press(Message::FetchDocuments);
+
+        let doc_count = widget::text::body(format!("{} {}", self.documents.len(), fl!("documents-count")));
+
+        let toolbar = widget::row::with_capacity(2)
+            .push(refresh_button)
+            .push(doc_count)
+            .spacing(space_s)
+            .align_y(Alignment::Center);
+
+        let content: Element<'_, Message> = if self.documents.is_empty() {
+            let empty_message = match &self.connection_status {
+                ConnectionStatus::Disconnected => fl!("not-connected"),
+                ConnectionStatus::Connecting => fl!("loading-documents"),
+                ConnectionStatus::Connected => fl!("no-documents"),
+                ConnectionStatus::Error(e) => e.clone(),
+            };
+            
+            widget::container(
+                widget::text::body(empty_message)
+            )
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .align_x(Horizontal::Center)
+            .align_y(Vertical::Center)
+            .into()
+        } else {
+            let mut list_column = widget::column::with_capacity(self.documents.len());
+            
+            for doc in &self.documents {
+                let doc_content = doc.document.as_deref().unwrap_or("[No content]");
+                let preview = if doc_content.len() > 200 {
+                    format!("{}...", &doc_content[..200])
+                } else {
+                    doc_content.to_string()
+                };
+
+                let metadata_str = doc
+                    .metadata
+                    .as_ref()
+                    .map(|m| {
+                        m.iter()
+                            .map(|(k, v)| format!("{}: {}", k, v))
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    })
+                    .unwrap_or_default();
+
+                let mut item_content = widget::column::with_capacity(3)
+                    .push(widget::text::title4(&doc.id))
+                    .push(widget::text::body(preview))
+                    .spacing(4);
+
+                if !metadata_str.is_empty() {
+                    item_content = item_content.push(
+                        widget::text::caption(metadata_str)
+                    );
+                }
+
+                let item = widget::container(item_content)
+                    .padding(space_s)
+                    .width(Length::Fill)
+                    .class(cosmic::style::Container::Card);
                 
                 list_column = list_column.push(item);
             }
@@ -535,4 +699,9 @@ async fn test_connection(url: &str, token: &str, auth_header_type: &str) -> Resu
 async fn fetch_collections(url: &str, token: &str, auth_header_type: &str) -> Result<Vec<Collection>, String> {
     let client = ChromaClient::new(url, token, auth_header_type).map_err(|e| e.to_string())?;
     client.list_collections().await.map_err(|e| e.to_string())
+}
+
+async fn fetch_documents(url: &str, token: &str, auth_header_type: &str, collection_id: &str) -> Result<Vec<Document>, String> {
+    let client = ChromaClient::new(url, token, auth_header_type).map_err(|e| e.to_string())?;
+    client.get_documents(collection_id, Some(100), None).await.map_err(|e| e.to_string())
 }

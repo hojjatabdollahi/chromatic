@@ -33,3 +33,8 @@ status-disconnected = Not connected
 status-connecting = Connecting...
 status-connected = Connected successfully
 status-error = Error
+
+# Documents page
+documents-count = documents
+loading-documents = Loading documents...
+no-documents = No documents in this collection.
