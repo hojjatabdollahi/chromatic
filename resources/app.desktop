@@ -1,0 +1,11 @@
+[Desktop Entry]
+Name=Chromatic
+Comment=Chroma DB UI
+Type=Application
+Icon=io.github.hojjatabdollahi.chromatic
+Exec=chromatic %F
+Terminal=false
+StartupNotify=true
+Categories=COSMIC
+Keywords=COSMIC
+MimeType=
