@@ -3,7 +3,7 @@
 use cosmic::cosmic_config::{self, cosmic_config_derive::CosmicConfigEntry, CosmicConfigEntry};
 
 #[derive(Debug, Clone, CosmicConfigEntry, Eq, PartialEq)]
-#[version = 1]
+#[version = 2]
 pub struct Config {
     /// ChromaDB server URL (e.g., http://localhost:8000)
     pub server_url: String,
@@ -11,6 +11,10 @@ pub struct Config {
     pub auth_token: String,
     /// Authentication header type: "authorization" (Bearer) or "x-chroma-token"
     pub auth_header_type: String,
+    /// Tenant name (default: default_tenant)
+    pub tenant: String,
+    /// Database name (default: default_database)
+    pub database: String,
 }
 
 impl Default for Config {
@@ -19,6 +23,8 @@ impl Default for Config {
             server_url: String::from("http://localhost:8000"),
             auth_token: String::new(),
             auth_header_type: String::from("authorization"),
+            tenant: String::from("default_tenant"),
+            database: String::from("default_database"),
         }
     }
 }

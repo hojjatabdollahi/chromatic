@@ -24,6 +24,20 @@ pub struct HeartbeatResponse {
     pub nanosecond_heartbeat: i64,
 }
 
+/// Tenant information from ChromaDB
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Tenant {
+    pub name: String,
+}
+
+/// Database information from ChromaDB
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Database {
+    pub id: String,
+    pub name: String,
+    pub tenant: String,
+}
+
 /// A document stored in a collection
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct Document {
@@ -132,9 +146,9 @@ impl ChromaClient {
             .map_err(|e| ChromaError::InvalidResponse(e.to_string()))
     }
 
-    /// List all collections
-    pub async fn list_collections(&self) -> Result<Vec<Collection>, ChromaError> {
-        let url = format!("{}/api/v1/collections", self.base_url);
+    /// Check if a tenant exists
+    pub async fn get_tenant(&self, tenant: &str) -> Result<Tenant, ChromaError> {
+        let url = format!("{}/api/v1/tenants/{}", self.base_url, tenant);
         
         let response = self
             .client
@@ -144,9 +158,76 @@ impl ChromaClient {
             .map_err(|e| ChromaError::ConnectionFailed(e.to_string()))?;
 
         if !response.status().is_success() {
+            let status = response.status();
+            let body = response.text().await.unwrap_or_default();
             return Err(ChromaError::RequestFailed(format!(
-                "Server returned status: {}",
-                response.status()
+                "Tenant '{}' not found: {} - {}",
+                tenant, status, body
+            )));
+        }
+
+        response
+            .json::<Tenant>()
+            .await
+            .map_err(|e| ChromaError::InvalidResponse(e.to_string()))
+    }
+
+    /// Check if a database exists within a tenant
+    pub async fn get_database(&self, tenant: &str, database: &str) -> Result<Database, ChromaError> {
+        let url = format!(
+            "{}/api/v1/databases/{}?tenant={}",
+            self.base_url, database, tenant
+        );
+        
+        let response = self
+            .client
+            .get(&url)
+            .send()
+            .await
+            .map_err(|e| ChromaError::ConnectionFailed(e.to_string()))?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let body = response.text().await.unwrap_or_default();
+            return Err(ChromaError::RequestFailed(format!(
+                "Database '{}' not found in tenant '{}': {} - {}",
+                database, tenant, status, body
+            )));
+        }
+
+        response
+            .json::<Database>()
+            .await
+            .map_err(|e| ChromaError::InvalidResponse(e.to_string()))
+    }
+
+    /// Validate that both tenant and database exist
+    pub async fn validate_tenant_database(&self, tenant: &str, database: &str) -> Result<(), ChromaError> {
+        self.get_tenant(tenant).await?;
+        self.get_database(tenant, database).await?;
+        Ok(())
+    }
+
+    /// List all collections for a specific tenant and database
+    pub async fn list_collections(&self, tenant: &str, database: &str) -> Result<Vec<Collection>, ChromaError> {
+        let url = format!(
+            "{}/api/v1/databases/{}/collections?tenant={}",
+            self.base_url, database, tenant
+        );
+        
+        let response = self
+            .client
+            .get(&url)
+            .send()
+            .await
+            .map_err(|e| ChromaError::ConnectionFailed(e.to_string()))?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let body = response.text().await.unwrap_or_default();
+            return Err(ChromaError::RequestFailed(format!(
+                "Server returned status: {} - {}",
+                status, body
             )));
         }
 
@@ -162,8 +243,13 @@ impl ChromaClient {
         collection_id: &str,
         limit: Option<usize>,
         offset: Option<usize>,
+        tenant: &str,
+        database: &str,
     ) -> Result<Vec<Document>, ChromaError> {
-        let url = format!("{}/api/v1/collections/{}/get", self.base_url, collection_id);
+        let url = format!(
+            "{}/api/v1/databases/{}/collections/{}/get?tenant={}",
+            self.base_url, database, collection_id, tenant
+        );
         
         let request = GetDocumentsRequest {
             ids: None,

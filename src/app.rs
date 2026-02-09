@@ -43,10 +43,25 @@ pub struct AppModel {
     auth_token_input: String,
     /// Temporary auth header type input (before saving)
     auth_header_type_input: String,
+    /// Temporary tenant input (before saving)
+    tenant_input: String,
+    /// Temporary database input (before saving)
+    database_input: String,
     /// Currently selected collection
     selected_collection: Option<Collection>,
     /// Documents in the selected collection
     documents: Vec<Document>,
+    /// Settings save/validation status
+    settings_status: SettingsStatus,
+}
+
+#[derive(Debug, Clone, Default)]
+pub enum SettingsStatus {
+    #[default]
+    Idle,
+    Validating,
+    Saved,
+    Error(String),
 }
 
 #[derive(Debug, Clone, Default)]
@@ -70,7 +85,11 @@ pub enum Message {
     ServerUrlChanged(String),
     AuthTokenChanged(String),
     AuthHeaderTypeChanged(String),
+    TenantChanged(String),
+    DatabaseChanged(String),
     SaveSettings,
+    ValidateAndSaveSettings,
+    SettingsValidationResult(Result<(), String>),
     
     // Connection & data
     TestConnection,
@@ -154,12 +173,15 @@ impl cosmic::Application for AppModel {
             server_url_input: config.server_url.clone(),
             auth_token_input: config.auth_token.clone(),
             auth_header_type_input: config.auth_header_type.clone(),
+            tenant_input: config.tenant.clone(),
+            database_input: config.database.clone(),
             config,
             config_context,
             collections: Vec::new(),
             connection_status: ConnectionStatus::Disconnected,
             selected_collection: None,
             documents: Vec::new(),
+            settings_status: SettingsStatus::Idle,
         };
 
         // Create a startup command that sets the window title.
@@ -250,6 +272,8 @@ impl cosmic::Application for AppModel {
                 self.server_url_input = self.config.server_url.clone();
                 self.auth_token_input = self.config.auth_token.clone();
                 self.auth_header_type_input = self.config.auth_header_type.clone();
+                self.tenant_input = self.config.tenant.clone();
+                self.database_input = self.config.database.clone();
             }
 
             Message::LaunchUrl(url) => match open::that_detached(&url) {
@@ -272,14 +296,54 @@ impl cosmic::Application for AppModel {
                 self.auth_header_type_input = header_type;
             }
 
+            Message::TenantChanged(tenant) => {
+                self.tenant_input = tenant;
+            }
+
+            Message::DatabaseChanged(database) => {
+                self.database_input = database;
+            }
+
             Message::SaveSettings => {
+                // Direct save without validation (internal use)
                 self.config.server_url = self.server_url_input.clone();
                 self.config.auth_token = self.auth_token_input.clone();
                 self.config.auth_header_type = self.auth_header_type_input.clone();
+                self.config.tenant = self.tenant_input.clone();
+                self.config.database = self.database_input.clone();
                 
                 if let Some(ref context) = self.config_context {
                     if let Err(e) = self.config.write_entry(context) {
                         eprintln!("Failed to save config: {}", e);
+                        self.settings_status = SettingsStatus::Error(format!("Failed to save: {}", e));
+                    } else {
+                        self.settings_status = SettingsStatus::Saved;
+                    }
+                }
+            }
+
+            Message::ValidateAndSaveSettings => {
+                self.settings_status = SettingsStatus::Validating;
+                let url = self.server_url_input.clone();
+                let token = self.auth_token_input.clone();
+                let auth_header_type = self.auth_header_type_input.clone();
+                let tenant = self.tenant_input.clone();
+                let database = self.database_input.clone();
+                
+                return cosmic::task::future(async move {
+                    let result = validate_tenant_database(&url, &token, &auth_header_type, &tenant, &database).await;
+                    cosmic::Action::App(Message::SettingsValidationResult(result))
+                });
+            }
+
+            Message::SettingsValidationResult(result) => {
+                match result {
+                    Ok(()) => {
+                        // Validation passed, save the settings
+                        return self.update(Message::SaveSettings);
+                    }
+                    Err(e) => {
+                        self.settings_status = SettingsStatus::Error(e);
                     }
                 }
             }
@@ -312,9 +376,11 @@ impl cosmic::Application for AppModel {
                 let url = self.config.server_url.clone();
                 let token = self.config.auth_token.clone();
                 let auth_header_type = self.config.auth_header_type.clone();
+                let tenant = self.config.tenant.clone();
+                let database = self.config.database.clone();
                 
                 return cosmic::task::future(async move {
-                    let result = fetch_collections(&url, &token, &auth_header_type).await;
+                    let result = fetch_collections(&url, &token, &auth_header_type, &tenant, &database).await;
                     cosmic::Action::App(Message::CollectionsLoaded(result))
                 });
             }
@@ -350,9 +416,11 @@ impl cosmic::Application for AppModel {
                     let token = self.config.auth_token.clone();
                     let auth_header_type = self.config.auth_header_type.clone();
                     let collection_id = collection.id.clone();
+                    let tenant = self.config.tenant.clone();
+                    let database = self.config.database.clone();
                     
                     return cosmic::task::future(async move {
-                        let result = fetch_documents(&url, &token, &auth_header_type, &collection_id).await;
+                        let result = fetch_documents(&url, &token, &auth_header_type, &collection_id, &tenant, &database).await;
                         cosmic::Action::App(Message::DocumentsLoaded(result))
                     });
                 }
@@ -617,22 +685,67 @@ impl AppModel {
                             )
                             .spacing(space_s)
                     )
+            )
+            .add(
+                cosmic::widget::settings::item::builder(fl!("tenant"))
+                    .description(fl!("tenant-description"))
+                    .control(
+                        widget::text_input(fl!("tenant-placeholder"), &self.tenant_input)
+                            .on_input(Message::TenantChanged)
+                            .width(Length::Fixed(300.0))
+                    )
+            )
+            .add(
+                cosmic::widget::settings::item::builder(fl!("database"))
+                    .description(fl!("database-description"))
+                    .control(
+                        widget::text_input(fl!("database-placeholder"), &self.database_input)
+                            .on_input(Message::DatabaseChanged)
+                            .width(Length::Fixed(300.0))
+                    )
             );
 
-        // Connection status and buttons
-        let status_text = match &self.connection_status {
+        // Connection status
+        let connection_status_text = match &self.connection_status {
             ConnectionStatus::Disconnected => fl!("status-disconnected"),
             ConnectionStatus::Connecting => fl!("status-connecting"),
             ConnectionStatus::Connected => fl!("status-connected"),
             ConnectionStatus::Error(e) => format!("{}: {}", fl!("status-error"), e),
         };
 
-        let buttons = widget::row::with_capacity(3)
-            .push(widget::button::standard(fl!("save")).on_press(Message::SaveSettings))
+        // Settings save status
+        let (save_button_label, save_status_text) = match &self.settings_status {
+            SettingsStatus::Idle => (fl!("save"), String::new()),
+            SettingsStatus::Validating => (fl!("validating"), fl!("validating-tenant-db")),
+            SettingsStatus::Saved => (fl!("save"), fl!("settings-saved")),
+            SettingsStatus::Error(e) => (fl!("save"), e.clone()),
+        };
+
+        let save_button = if matches!(self.settings_status, SettingsStatus::Validating) {
+            widget::button::standard(save_button_label)
+        } else {
+            widget::button::standard(save_button_label).on_press(Message::ValidateAndSaveSettings)
+        };
+
+        let mut buttons = widget::row::with_capacity(4)
+            .push(save_button)
             .push(widget::button::suggested(fl!("test-connection")).on_press(Message::TestConnection))
-            .push(widget::text::body(status_text))
+            .push(widget::text::body(connection_status_text))
             .spacing(space_s)
             .align_y(Alignment::Center);
+
+        // Show save status if there's one
+        if !save_status_text.is_empty() {
+            let status_style = match &self.settings_status {
+                SettingsStatus::Saved => cosmic::theme::Button::Suggested,
+                SettingsStatus::Error(_) => cosmic::theme::Button::Destructive,
+                _ => cosmic::theme::Button::Standard,
+            };
+            buttons = buttons.push(
+                widget::button::custom(widget::text::caption(save_status_text))
+                    .class(status_style)
+            );
+        }
 
         widget::column::with_capacity(3)
             .push(header)
@@ -696,12 +809,17 @@ async fn test_connection(url: &str, token: &str, auth_header_type: &str) -> Resu
     Ok(())
 }
 
-async fn fetch_collections(url: &str, token: &str, auth_header_type: &str) -> Result<Vec<Collection>, String> {
+async fn validate_tenant_database(url: &str, token: &str, auth_header_type: &str, tenant: &str, database: &str) -> Result<(), String> {
     let client = ChromaClient::new(url, token, auth_header_type).map_err(|e| e.to_string())?;
-    client.list_collections().await.map_err(|e| e.to_string())
+    client.validate_tenant_database(tenant, database).await.map_err(|e| e.to_string())
 }
 
-async fn fetch_documents(url: &str, token: &str, auth_header_type: &str, collection_id: &str) -> Result<Vec<Document>, String> {
+async fn fetch_collections(url: &str, token: &str, auth_header_type: &str, tenant: &str, database: &str) -> Result<Vec<Collection>, String> {
     let client = ChromaClient::new(url, token, auth_header_type).map_err(|e| e.to_string())?;
-    client.get_documents(collection_id, Some(100), None).await.map_err(|e| e.to_string())
+    client.list_collections(tenant, database).await.map_err(|e| e.to_string())
+}
+
+async fn fetch_documents(url: &str, token: &str, auth_header_type: &str, collection_id: &str, tenant: &str, database: &str) -> Result<Vec<Document>, String> {
+    let client = ChromaClient::new(url, token, auth_header_type).map_err(|e| e.to_string())?;
+    client.get_documents(collection_id, Some(100), None, tenant, database).await.map_err(|e| e.to_string())
 }
