@@ -56,6 +56,10 @@ missing-resources = Missing resources
 create-missing = Create Missing
 creating = Creating...
 creating-resources = Creating tenant and/or database...
+load-available = Load Available
+load-available-description = Fetch available tenants and databases from the server
+load-tenants = Load Tenants
+load-databases = Load Databases
 
 # Dashboard page
 server-version = Server Version

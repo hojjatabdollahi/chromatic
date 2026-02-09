@@ -61,6 +61,8 @@ pub struct AppModel {
     server_info: Option<ServerInfo>,
     /// Available databases for the current tenant (for selection)
     available_databases: Vec<String>,
+    /// Available tenants (for selection)
+    available_tenants: Vec<String>,
 }
 
 /// What's missing during validation
@@ -116,9 +118,16 @@ pub enum Message {
     /// Create missing tenant and/or database
     CreateMissingResources,
     CreateResourcesResult(Result<(), String>),
+    /// Fetch available tenants
+    FetchTenants,
+    TenantsLoaded(Result<Vec<String>, String>),
     /// Fetch available databases for current tenant
     FetchDatabases,
     DatabasesLoaded(Result<Vec<String>, String>),
+    /// Select a tenant from the list
+    SelectTenant(String),
+    /// Select a database from the list
+    SelectDatabase(String),
     
     // Server management
     SelectServer(usize),
@@ -232,6 +241,7 @@ impl cosmic::Application for AppModel {
             settings_status: SettingsStatus::Idle,
             server_info: None,
             available_databases: Vec::new(),
+            available_tenants: Vec::new(),
         };
 
         // Create a startup command that sets the window title.
@@ -543,6 +553,41 @@ impl cosmic::Application for AppModel {
                         self.available_databases.clear();
                     }
                 }
+            }
+
+            Message::FetchTenants => {
+                let url = self.server_url_input.clone();
+                let token = self.auth_token_input.clone();
+                let auth_header_type = self.auth_header_type_input.clone();
+                
+                return cosmic::task::future(async move {
+                    let result = fetch_tenants(&url, &token, &auth_header_type).await;
+                    cosmic::Action::App(Message::TenantsLoaded(result))
+                });
+            }
+
+            Message::TenantsLoaded(result) => {
+                match result {
+                    Ok(tenants) => {
+                        self.available_tenants = tenants;
+                    }
+                    Err(_) => {
+                        // Silently fail - tenants list is optional
+                        self.available_tenants.clear();
+                    }
+                }
+            }
+
+            Message::SelectTenant(tenant) => {
+                self.tenant_input = tenant;
+                // Clear databases when tenant changes and fetch new ones
+                self.available_databases.clear();
+                self.database_input = String::from("default_database");
+                return self.update(Message::FetchDatabases);
+            }
+
+            Message::SelectDatabase(database) => {
+                self.database_input = database;
             }
 
             Message::TestConnection => {
@@ -1059,18 +1104,76 @@ impl AppModel {
                 cosmic::widget::settings::item::builder(fl!("tenant"))
                     .description(fl!("tenant-description"))
                     .control(
-                        widget::text_input(fl!("tenant-placeholder"), &self.tenant_input)
-                            .on_input(Message::TenantChanged)
-                            .width(Length::Fixed(300.0))
+                        widget::column::with_capacity(2)
+                            .push(
+                                widget::text_input(fl!("tenant-placeholder"), &self.tenant_input)
+                                    .on_input(Message::TenantChanged)
+                                    .width(Length::Fixed(300.0))
+                            )
+                            .push({
+                                let mut tenant_row = widget::row::with_capacity(self.available_tenants.len() + 1)
+                                    .spacing(space_s);
+                                for tenant in &self.available_tenants {
+                                    let is_selected = *tenant == self.tenant_input;
+                                    tenant_row = tenant_row.push(
+                                        widget::button::text(tenant)
+                                            .class(if is_selected {
+                                                cosmic::theme::Button::Suggested
+                                            } else {
+                                                cosmic::theme::Button::Standard
+                                            })
+                                            .on_press(Message::SelectTenant(tenant.clone()))
+                                    );
+                                }
+                                tenant_row
+                            })
+                            .spacing(space_s)
                     )
             )
             .add(
                 cosmic::widget::settings::item::builder(fl!("database"))
                     .description(fl!("database-description"))
                     .control(
-                        widget::text_input(fl!("database-placeholder"), &self.database_input)
-                            .on_input(Message::DatabaseChanged)
-                            .width(Length::Fixed(300.0))
+                        widget::column::with_capacity(2)
+                            .push(
+                                widget::text_input(fl!("database-placeholder"), &self.database_input)
+                                    .on_input(Message::DatabaseChanged)
+                                    .width(Length::Fixed(300.0))
+                            )
+                            .push({
+                                let mut db_row = widget::row::with_capacity(self.available_databases.len() + 1)
+                                    .spacing(space_s);
+                                for db in &self.available_databases {
+                                    let is_selected = *db == self.database_input;
+                                    db_row = db_row.push(
+                                        widget::button::text(db)
+                                            .class(if is_selected {
+                                                cosmic::theme::Button::Suggested
+                                            } else {
+                                                cosmic::theme::Button::Standard
+                                            })
+                                            .on_press(Message::SelectDatabase(db.clone()))
+                                    );
+                                }
+                                db_row
+                            })
+                            .spacing(space_s)
+                    )
+            )
+            .add(
+                cosmic::widget::settings::item::builder(fl!("load-available"))
+                    .description(fl!("load-available-description"))
+                    .control(
+                        widget::row::with_capacity(2)
+                            .push(
+                                widget::button::standard(fl!("load-tenants"))
+                                    .on_press(Message::FetchTenants)
+                            )
+                            .push(
+                                widget::button::standard(fl!("load-databases"))
+                                    .on_press(Message::FetchDatabases)
+                            )
+                            .spacing(space_s)
                     )
             );
 
@@ -1263,6 +1366,13 @@ async fn fetch_databases(url: &str, token: &str, auth_header_type: &str, tenant:
     let client = create_client(url, token, auth_header_type).await?;
     let databases = client.list_databases(tenant).await.map_err(|e| e.to_string())?;
     Ok(databases.into_iter().map(|db| db.name).collect())
+}
+
+/// Fetch available tenants
+async fn fetch_tenants(url: &str, token: &str, auth_header_type: &str) -> Result<Vec<String>, String> {
+    let client = create_client(url, token, auth_header_type).await?;
+    let tenants = client.list_tenants().await.map_err(|e| e.to_string())?;
+    Ok(tenants.into_iter().map(|t| t.name).collect())
 }
 
 async fn fetch_collections(url: &str, token: &str, auth_header_type: &str, tenant: &str, database: &str) -> Result<Vec<Collection>, String> {

@@ -259,6 +259,30 @@ impl ChromaClient {
             .map_err(|e| ChromaError::InvalidResponse(e.to_string()))
     }
 
+    /// List all tenants (may not be available on all ChromaDB installations)
+    /// Returns empty list if the endpoint is not available
+    pub async fn list_tenants(&self) -> Result<Vec<Tenant>, ChromaError> {
+        let url = format!("{}/tenants", self.api_prefix());
+        
+        let response = self
+            .client
+            .get(&url)
+            .send()
+            .await
+            .map_err(|e| ChromaError::ConnectionFailed(e.to_string()))?;
+
+        if !response.status().is_success() {
+            // Many ChromaDB installations don't support listing tenants
+            // Return empty list instead of error
+            return Ok(Vec::new());
+        }
+
+        response
+            .json::<Vec<Tenant>>()
+            .await
+            .or_else(|_| Ok(Vec::new())) // Return empty on parse error
+    }
+
     /// Check if a database exists within a tenant
     pub async fn get_database(&self, tenant: &str, database: &str) -> Result<Database, ChromaError> {
         let url = match self.api_version {
