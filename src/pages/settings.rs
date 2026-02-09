@@ -12,8 +12,8 @@ use cosmic::widget::{self, icon};
 pub fn view(app: &AppModel, space_s: u16, space_m: u16) -> Element<'_, Message> {
     let header = widget::text::title1(fl!("settings"));
 
-    // Server selection section - show list of saved servers
-    let mut server_buttons = widget::row::with_capacity(app.config.servers.len() + 1);
+    // Server selection section - show dropdown-style selector of saved servers
+    let mut server_selector = widget::row::with_capacity(app.config.servers.len() + 1);
     for (index, server) in app.config.servers.iter().enumerate() {
         let is_active = index == app.config.active_server;
         let button = widget::button::text(&server.name)
@@ -23,23 +23,27 @@ pub fn view(app: &AppModel, space_s: u16, space_m: u16) -> Element<'_, Message> 
                 cosmic::theme::Button::Standard
             })
             .on_press(Message::SelectServer(index));
-        server_buttons = server_buttons.push(button);
+        server_selector = server_selector.push(button);
     }
-    // Add new server button
-    server_buttons = server_buttons
+    server_selector = server_selector
         .push(
             widget::button::icon(icon::from_name("list-add-symbolic"))
                 .on_press(Message::AddNewServer),
         )
-        .spacing(space_s);
+        .spacing(space_s)
+        .align_y(Alignment::Center);
 
     let servers_section = cosmic::widget::settings::section()
         .title(fl!("servers"))
         .add(
             cosmic::widget::settings::item::builder(fl!("saved-servers"))
                 .description(fl!("saved-servers-description"))
-                .control(server_buttons),
+                .control(server_selector),
         );
+
+    // Clone data for dropdown closures
+    let tenants_for_dropdown = app.available_tenants.clone();
+    let databases_for_dropdown = app.available_databases.clone();
 
     // Server configuration section
     let mut server_section = cosmic::widget::settings::section()
@@ -109,80 +113,102 @@ pub fn view(app: &AppModel, space_s: u16, space_m: u16) -> Element<'_, Message> 
         .add(
             cosmic::widget::settings::item::builder(fl!("tenant"))
                 .description(fl!("tenant-description"))
-                .control(
-                    widget::column::with_capacity(2)
+                .control({
+                    let mut col = widget::column::with_capacity(3)
                         .push(
-                            widget::text_input(fl!("tenant-placeholder"), &app.tenant_input)
-                                .on_input(Message::TenantChanged)
-                                .width(Length::Fixed(300.0)),
+                            widget::row::with_capacity(2)
+                                .push(
+                                    widget::text_input(
+                                        fl!("tenant-placeholder"),
+                                        &app.tenant_input,
+                                    )
+                                    .on_input(Message::TenantChanged)
+                                    .width(Length::Fixed(250.0)),
+                                )
+                                .push(
+                                    widget::button::standard(fl!("load-tenants"))
+                                        .on_press(Message::FetchTenants),
+                                )
+                                .spacing(space_s)
+                                .align_y(Alignment::Center),
                         )
-                        .push({
-                            let mut tenant_row =
-                                widget::row::with_capacity(app.available_tenants.len() + 1)
-                                    .spacing(space_s);
-                            for tenant in &app.available_tenants {
-                                let is_selected = *tenant == app.tenant_input;
-                                tenant_row = tenant_row.push(
-                                    widget::button::text(tenant)
-                                        .class(if is_selected {
-                                            cosmic::theme::Button::Suggested
-                                        } else {
-                                            cosmic::theme::Button::Standard
-                                        })
-                                        .on_press(Message::SelectTenant(tenant.clone())),
-                                );
-                            }
-                            tenant_row
-                        })
-                        .spacing(space_s),
-                ),
+                        .spacing(space_s);
+
+                    // Show dropdown if tenants are available
+                    if !app.available_tenants.is_empty() {
+                        let selected_idx = app
+                            .available_tenants
+                            .iter()
+                            .position(|t| *t == app.tenant_input);
+                        let tenants_clone = tenants_for_dropdown.clone();
+                        col = col.push(
+                            widget::dropdown(&app.available_tenants, selected_idx, move |idx| {
+                                Message::SelectTenant(tenants_clone[idx].clone())
+                            })
+                            .width(Length::Fixed(300.0)),
+                        );
+                    }
+
+                    // Show error if loading failed
+                    if let Some(ref error) = app.tenants_load_error {
+                        col = col.push(
+                            widget::text::caption(format!("{}: {}", fl!("error"), error))
+                                .class(cosmic::style::Text::Accent),
+                        );
+                    }
+
+                    col
+                }),
         )
         .add(
             cosmic::widget::settings::item::builder(fl!("database"))
                 .description(fl!("database-description"))
-                .control(
-                    widget::column::with_capacity(2)
+                .control({
+                    let mut col = widget::column::with_capacity(3)
                         .push(
-                            widget::text_input(fl!("database-placeholder"), &app.database_input)
-                                .on_input(Message::DatabaseChanged)
-                                .width(Length::Fixed(300.0)),
+                            widget::row::with_capacity(2)
+                                .push(
+                                    widget::text_input(
+                                        fl!("database-placeholder"),
+                                        &app.database_input,
+                                    )
+                                    .on_input(Message::DatabaseChanged)
+                                    .width(Length::Fixed(250.0)),
+                                )
+                                .push(
+                                    widget::button::standard(fl!("load-databases"))
+                                        .on_press(Message::FetchDatabases),
+                                )
+                                .spacing(space_s)
+                                .align_y(Alignment::Center),
                         )
-                        .push({
-                            let mut db_row =
-                                widget::row::with_capacity(app.available_databases.len() + 1)
-                                    .spacing(space_s);
-                            for db in &app.available_databases {
-                                let is_selected = *db == app.database_input;
-                                db_row = db_row.push(
-                                    widget::button::text(db)
-                                        .class(if is_selected {
-                                            cosmic::theme::Button::Suggested
-                                        } else {
-                                            cosmic::theme::Button::Standard
-                                        })
-                                        .on_press(Message::SelectDatabase(db.clone())),
-                                );
-                            }
-                            db_row
-                        })
-                        .spacing(space_s),
-                ),
-        )
-        .add(
-            cosmic::widget::settings::item::builder(fl!("load-available"))
-                .description(fl!("load-available-description"))
-                .control(
-                    widget::row::with_capacity(2)
-                        .push(
-                            widget::button::standard(fl!("load-tenants"))
-                                .on_press(Message::FetchTenants),
-                        )
-                        .push(
-                            widget::button::standard(fl!("load-databases"))
-                                .on_press(Message::FetchDatabases),
-                        )
-                        .spacing(space_s),
-                ),
+                        .spacing(space_s);
+
+                    // Show dropdown if databases are available
+                    if !app.available_databases.is_empty() {
+                        let selected_idx = app
+                            .available_databases
+                            .iter()
+                            .position(|d| *d == app.database_input);
+                        let databases_clone = databases_for_dropdown.clone();
+                        col = col.push(
+                            widget::dropdown(&app.available_databases, selected_idx, move |idx| {
+                                Message::SelectDatabase(databases_clone[idx].clone())
+                            })
+                            .width(Length::Fixed(300.0)),
+                        );
+                    }
+
+                    // Show error if loading failed
+                    if let Some(ref error) = app.databases_load_error {
+                        col = col.push(
+                            widget::text::caption(format!("{}: {}", fl!("error"), error))
+                                .class(cosmic::style::Text::Accent),
+                        );
+                    }
+
+                    col
+                }),
         );
 
     // Add delete button if there's more than one server

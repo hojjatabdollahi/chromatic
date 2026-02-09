@@ -64,6 +64,10 @@ pub struct AppModel {
     pub available_databases: Vec<String>,
     /// Available tenants (for selection)
     pub available_tenants: Vec<String>,
+    /// Error message when loading tenants fails
+    pub tenants_load_error: Option<String>,
+    /// Error message when loading databases fails
+    pub databases_load_error: Option<String>,
 }
 
 /// What's missing during validation
@@ -243,6 +247,8 @@ impl cosmic::Application for AppModel {
             server_info: None,
             available_databases: Vec::new(),
             available_tenants: Vec::new(),
+            tenants_load_error: None,
+            databases_load_error: None,
         };
 
         // Create a startup command that sets the window title.
@@ -548,10 +554,11 @@ impl cosmic::Application for AppModel {
                 match result {
                     Ok(databases) => {
                         self.available_databases = databases;
+                        self.databases_load_error = None;
                     }
-                    Err(_) => {
-                        // Silently fail - databases list is optional
+                    Err(e) => {
                         self.available_databases.clear();
+                        self.databases_load_error = Some(e);
                     }
                 }
             }
@@ -571,10 +578,11 @@ impl cosmic::Application for AppModel {
                 match result {
                     Ok(tenants) => {
                         self.available_tenants = tenants;
+                        self.tenants_load_error = None;
                     }
-                    Err(_) => {
-                        // Silently fail - tenants list is optional
+                    Err(e) => {
                         self.available_tenants.clear();
+                        self.tenants_load_error = Some(e);
                     }
                 }
             }
