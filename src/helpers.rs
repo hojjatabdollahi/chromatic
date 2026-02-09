@@ -105,7 +105,7 @@ pub async fn fetch_collections(
     client.list_collections(tenant, database).await.map_err(|e| e.to_string())
 }
 
-/// Fetch documents from a collection
+/// Fetch documents from a collection with pagination
 pub async fn fetch_documents(
     url: &str,
     token: &str,
@@ -113,7 +113,9 @@ pub async fn fetch_documents(
     collection_id: &str,
     tenant: &str,
     database: &str,
+    limit: usize,
+    offset: usize,
 ) -> Result<Vec<Document>, String> {
     let client = create_client(url, token, auth_header_type).await?;
-    client.get_documents(collection_id, Some(100), None, tenant, database).await.map_err(|e| e.to_string())
+    client.get_documents(collection_id, Some(limit), Some(offset), tenant, database).await.map_err(|e| e.to_string())
 }

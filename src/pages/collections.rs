@@ -7,7 +7,7 @@ use crate::fl;
 use cosmic::iced::alignment::{Horizontal, Vertical};
 use cosmic::iced::{Alignment, Length};
 use cosmic::prelude::*;
-use cosmic::widget;
+use cosmic::widget::{self, icon};
 
 use super::widgets::connection_status_badge;
 
@@ -41,9 +41,16 @@ pub fn view(app: &AppModel, space_s: u16, space_m: u16) -> Element<'_, Message> 
             .align_y(Vertical::Center)
             .into()
     } else {
-        let mut list_column = widget::column::with_capacity(app.collections.len());
+        // Calculate pagination
+        let total_items = app.collections.len();
+        let total_pages = (total_items + app.items_per_page - 1) / app.items_per_page;
+        let start_idx = app.collections_page * app.items_per_page;
+        let end_idx = (start_idx + app.items_per_page).min(total_items);
+        let page_items = &app.collections[start_idx..end_idx];
 
-        for collection in &app.collections {
+        let mut list_column = widget::column::with_capacity(page_items.len());
+
+        for collection in page_items {
             let collection_clone = collection.clone();
             let item = widget::mouse_area(
                 widget::container(
@@ -61,7 +68,53 @@ pub fn view(app: &AppModel, space_s: u16, space_m: u16) -> Element<'_, Message> 
             list_column = list_column.push(item);
         }
 
-        widget::scrollable(list_column.spacing(space_s))
+        // Pagination controls
+        let mut pagination_row = widget::row::with_capacity(5)
+            .spacing(space_s)
+            .align_y(Alignment::Center);
+
+        // Previous button
+        let prev_button = if app.collections_page > 0 {
+            widget::button::icon(icon::from_name("go-previous-symbolic"))
+                .on_press(Message::CollectionsPrevPage)
+        } else {
+            widget::button::icon(icon::from_name("go-previous-symbolic"))
+        };
+        pagination_row = pagination_row.push(prev_button);
+
+        // Page info
+        let page_info = widget::text::body(format!(
+            "{} {} / {}",
+            fl!("page"),
+            app.collections_page + 1,
+            total_pages.max(1)
+        ));
+        pagination_row = pagination_row.push(page_info);
+
+        // Next button
+        let next_button = if app.collections_page + 1 < total_pages {
+            widget::button::icon(icon::from_name("go-next-symbolic"))
+                .on_press(Message::CollectionsNextPage)
+        } else {
+            widget::button::icon(icon::from_name("go-next-symbolic"))
+        };
+        pagination_row = pagination_row.push(next_button);
+
+        // Total items count
+        pagination_row = pagination_row.push(widget::text::caption(format!(
+            "({} {})",
+            total_items,
+            fl!("items-total")
+        )));
+
+        widget::column::with_capacity(2)
+            .push(
+                widget::scrollable(list_column.spacing(space_s))
+                    .width(Length::Fill)
+                    .height(Length::Fill),
+            )
+            .push(pagination_row)
+            .spacing(space_s)
             .width(Length::Fill)
             .height(Length::Fill)
             .into()

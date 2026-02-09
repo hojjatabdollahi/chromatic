@@ -68,6 +68,14 @@ pub struct AppModel {
     pub tenants_load_error: Option<String>,
     /// Error message when loading databases fails
     pub databases_load_error: Option<String>,
+    /// Current page for collections list (0-indexed)
+    pub collections_page: usize,
+    /// Current page for documents list (0-indexed)
+    pub documents_page: usize,
+    /// Items per page for pagination
+    pub items_per_page: usize,
+    /// Total count of documents in selected collection (if known)
+    pub documents_total: Option<usize>,
 }
 
 /// What's missing during validation
@@ -154,6 +162,12 @@ pub enum Message {
     // Dashboard
     FetchServerInfo,
     ServerInfoLoaded(Result<ServerInfo, String>),
+    
+    // Pagination
+    CollectionsNextPage,
+    CollectionsPrevPage,
+    DocumentsNextPage,
+    DocumentsPrevPage,
 }
 
 /// Create a COSMIC application from the app model
@@ -249,6 +263,10 @@ impl cosmic::Application for AppModel {
             available_tenants: Vec::new(),
             tenants_load_error: None,
             databases_load_error: None,
+            collections_page: 0,
+            documents_page: 0,
+            items_per_page: 20,
+            documents_total: None,
         };
 
         // Create a startup command that sets the window title.
@@ -652,6 +670,7 @@ impl cosmic::Application for AppModel {
             Message::SelectCollection(collection) => {
                 self.selected_collection = Some(collection);
                 self.documents.clear();
+                self.documents_page = 0; // Reset to first page
                 // Automatically fetch documents when selecting a collection
                 return self.update(Message::FetchDocuments);
             }
@@ -671,9 +690,11 @@ impl cosmic::Application for AppModel {
                     let collection_id = collection.id.clone();
                     let tenant = active.tenant.clone();
                     let database = active.database.clone();
+                    let limit = self.items_per_page;
+                    let offset = self.documents_page * self.items_per_page;
                     
                     return cosmic::task::future(async move {
-                        let result = helpers::fetch_documents(&url, &token, &auth_header_type, &collection_id, &tenant, &database).await;
+                        let result = helpers::fetch_documents(&url, &token, &auth_header_type, &collection_id, &tenant, &database, limit, offset).await;
                         cosmic::Action::App(Message::DocumentsLoaded(result))
                     });
                 }
@@ -716,6 +737,33 @@ impl cosmic::Application for AppModel {
                         self.server_info = None;
                         self.connection_status = ConnectionStatus::Error(e);
                     }
+                }
+            }
+
+            // Pagination
+            Message::CollectionsNextPage => {
+                let total_pages = (self.collections.len() + self.items_per_page - 1) / self.items_per_page;
+                if self.collections_page + 1 < total_pages {
+                    self.collections_page += 1;
+                }
+            }
+
+            Message::CollectionsPrevPage => {
+                if self.collections_page > 0 {
+                    self.collections_page -= 1;
+                }
+            }
+
+            Message::DocumentsNextPage => {
+                self.documents_page += 1;
+                // Fetch next page of documents
+                return self.update(Message::FetchDocuments);
+            }
+
+            Message::DocumentsPrevPage => {
+                if self.documents_page > 0 {
+                    self.documents_page -= 1;
+                    return self.update(Message::FetchDocuments);
                 }
             }
         }

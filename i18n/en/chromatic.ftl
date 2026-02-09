@@ -75,3 +75,9 @@ dashboard-connect-hint = Click Refresh to connect to the server and load dashboa
 documents-count = documents
 loading-documents = Loading documents...
 no-documents = No documents in this collection.
+no-more-documents = No more documents on this page.
+metadata = Metadata
+
+# Pagination
+page = Page
+items-total = items total
