@@ -5,6 +5,7 @@ view = View
 git-description = Git commit {$hash} on {$date}
 
 # Navigation
+dashboard = Dashboard
 collections = Collections
 settings = Settings
 
@@ -42,6 +43,14 @@ status-disconnected = Not connected
 status-connecting = Connecting...
 status-connected = Connected successfully
 status-error = Error
+
+# Dashboard page
+server-version = Server Version
+heartbeat = Heartbeat
+current-tenant = Current Tenant
+current-database = Current Database
+collection-count = Collections
+dashboard-connect-hint = Click Refresh to connect to the server and load dashboard data.
 
 # Documents page
 documents-count = documents

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 
-use crate::api::{ChromaClient, Collection, Document};
+use crate::api::{ChromaClient, Collection, Document, ServerInfo};
 use crate::config::Config;
 use crate::fl;
 use cosmic::app::context_drawer;
@@ -53,6 +53,8 @@ pub struct AppModel {
     documents: Vec<Document>,
     /// Settings save/validation status
     settings_status: SettingsStatus,
+    /// Server info for dashboard
+    server_info: Option<ServerInfo>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -102,6 +104,10 @@ pub enum Message {
     BackToCollections,
     FetchDocuments,
     DocumentsLoaded(Result<Vec<Document>, String>),
+    
+    // Dashboard
+    FetchServerInfo,
+    ServerInfoLoaded(Result<ServerInfo, String>),
 }
 
 /// Create a COSMIC application from the app model
@@ -131,14 +137,19 @@ impl cosmic::Application for AppModel {
         core: cosmic::Core,
         _flags: Self::Flags,
     ) -> (Self, Task<cosmic::Action<Self::Message>>) {
-        // Create a nav bar with two pages: Collections and Settings
+        // Create a nav bar with three pages: Dashboard, Collections and Settings
         let mut nav = nav_bar::Model::default();
+
+        nav.insert()
+            .text(fl!("dashboard"))
+            .data::<Page>(Page::Dashboard)
+            .icon(icon::from_name("utilities-system-monitor-symbolic"))
+            .activate();
 
         nav.insert()
             .text(fl!("collections"))
             .data::<Page>(Page::Collections)
-            .icon(icon::from_name("folder-symbolic"))
-            .activate();
+            .icon(icon::from_name("folder-symbolic"));
 
         nav.insert()
             .text(fl!("settings"))
@@ -182,6 +193,7 @@ impl cosmic::Application for AppModel {
             selected_collection: None,
             documents: Vec::new(),
             settings_status: SettingsStatus::Idle,
+            server_info: None,
         };
 
         // Create a startup command that sets the window title.
@@ -228,7 +240,8 @@ impl cosmic::Application for AppModel {
         let space_s = cosmic::theme::spacing().space_s;
         let space_m = cosmic::theme::spacing().space_m;
         
-        let content: Element<_> = match self.nav.active_data::<Page>().unwrap_or(&Page::Collections) {
+        let content: Element<_> = match self.nav.active_data::<Page>().unwrap_or(&Page::Dashboard) {
+            Page::Dashboard => self.view_dashboard(space_s, space_m),
             Page::Collections => {
                 // Show documents view if a collection is selected
                 if self.selected_collection.is_some() {
@@ -437,6 +450,33 @@ impl cosmic::Application for AppModel {
                     }
                 }
             }
+
+            Message::FetchServerInfo => {
+                self.connection_status = ConnectionStatus::Connecting;
+                let url = self.config.server_url.clone();
+                let token = self.config.auth_token.clone();
+                let auth_header_type = self.config.auth_header_type.clone();
+                
+                return cosmic::task::future(async move {
+                    let result = fetch_server_info(&url, &token, &auth_header_type).await;
+                    cosmic::Action::App(Message::ServerInfoLoaded(result))
+                });
+            }
+
+            Message::ServerInfoLoaded(result) => {
+                match result {
+                    Ok(info) => {
+                        self.server_info = Some(info);
+                        self.connection_status = ConnectionStatus::Connected;
+                        // Also fetch collections count for the dashboard
+                        return self.update(Message::FetchCollections);
+                    }
+                    Err(e) => {
+                        self.server_info = None;
+                        self.connection_status = ConnectionStatus::Error(e);
+                    }
+                }
+            }
         }
         Task::none()
     }
@@ -463,6 +503,106 @@ impl AppModel {
         } else {
             Task::none()
         }
+    }
+
+    /// View for the Dashboard page
+    fn view_dashboard(&self, _space_s: u16, space_m: u16) -> Element<'_, Message> {
+        let header = widget::row::with_capacity(2)
+            .push(widget::text::title1(fl!("dashboard")))
+            .push(self.connection_status_badge())
+            .align_y(Alignment::Center)
+            .spacing(space_m);
+
+        let refresh_button = widget::button::standard(fl!("refresh"))
+            .on_press(Message::FetchServerInfo);
+
+        // Stats cards
+        let version_card = self.stat_card(
+            fl!("server-version"),
+            self.server_info.as_ref().map(|i| i.version.clone()).unwrap_or_else(|| "-".to_string()),
+        );
+
+        let heartbeat_card = self.stat_card(
+            fl!("heartbeat"),
+            self.server_info.as_ref().map(|i| {
+                // Convert nanoseconds to a readable format
+                let secs = i.heartbeat_ns / 1_000_000_000;
+                format!("{} s", secs)
+            }).unwrap_or_else(|| "-".to_string()),
+        );
+
+        let tenant_card = self.stat_card(
+            fl!("current-tenant"),
+            self.config.tenant.clone(),
+        );
+
+        let database_card = self.stat_card(
+            fl!("current-database"),
+            self.config.database.clone(),
+        );
+
+        let collections_card = self.stat_card(
+            fl!("collection-count"),
+            self.collections.len().to_string(),
+        );
+
+        let stats_row1 = widget::row::with_capacity(3)
+            .push(version_card)
+            .push(heartbeat_card)
+            .push(collections_card)
+            .spacing(space_m);
+
+        let stats_row2 = widget::row::with_capacity(2)
+            .push(tenant_card)
+            .push(database_card)
+            .spacing(space_m);
+
+        let content: Element<'_, Message> = match &self.connection_status {
+            ConnectionStatus::Disconnected | ConnectionStatus::Error(_) => {
+                widget::column::with_capacity(2)
+                    .push(
+                        widget::container(
+                            widget::text::body(fl!("dashboard-connect-hint"))
+                        )
+                        .padding(space_m)
+                        .width(Length::Fill)
+                        .class(cosmic::style::Container::Card)
+                    )
+                    .push(refresh_button)
+                    .spacing(space_m)
+                    .into()
+            }
+            _ => {
+                widget::column::with_capacity(3)
+                    .push(refresh_button)
+                    .push(stats_row1)
+                    .push(stats_row2)
+                    .spacing(space_m)
+                    .into()
+            }
+        };
+
+        widget::column::with_capacity(2)
+            .push(header)
+            .push(content)
+            .spacing(space_m)
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .into()
+    }
+
+    /// Helper to create a stat card widget
+    fn stat_card(&self, label: String, value: String) -> Element<'_, Message> {
+        widget::container(
+            widget::column::with_capacity(2)
+                .push(widget::text::caption(label))
+                .push(widget::text::title3(value))
+                .spacing(4)
+        )
+        .padding(cosmic::theme::spacing().space_s)
+        .width(Length::FillPortion(1))
+        .class(cosmic::style::Container::Card)
+        .into()
     }
 
     /// View for the Collections page
@@ -773,8 +913,10 @@ impl AppModel {
 }
 
 /// The page to display in the application.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Page {
+    #[default]
+    Dashboard,
     Collections,
     Settings,
 }
@@ -807,6 +949,11 @@ async fn test_connection(url: &str, token: &str, auth_header_type: &str) -> Resu
     let client = ChromaClient::new(url, token, auth_header_type).map_err(|e| e.to_string())?;
     client.heartbeat().await.map_err(|e| e.to_string())?;
     Ok(())
+}
+
+async fn fetch_server_info(url: &str, token: &str, auth_header_type: &str) -> Result<ServerInfo, String> {
+    let client = ChromaClient::new(url, token, auth_header_type).map_err(|e| e.to_string())?;
+    client.get_server_info().await.map_err(|e| e.to_string())
 }
 
 async fn validate_tenant_database(url: &str, token: &str, auth_header_type: &str, tenant: &str, database: &str) -> Result<(), String> {

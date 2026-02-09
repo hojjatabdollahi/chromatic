@@ -24,6 +24,13 @@ pub struct HeartbeatResponse {
     pub nanosecond_heartbeat: i64,
 }
 
+/// Server info combining version and heartbeat
+#[derive(Debug, Clone, Default)]
+pub struct ServerInfo {
+    pub version: String,
+    pub heartbeat_ns: i64,
+}
+
 /// Tenant information from ChromaDB
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Tenant {
@@ -144,6 +151,44 @@ impl ChromaClient {
             .json::<HeartbeatResponse>()
             .await
             .map_err(|e| ChromaError::InvalidResponse(e.to_string()))
+    }
+
+    /// Get server version
+    pub async fn get_version(&self) -> Result<String, ChromaError> {
+        let url = format!("{}/api/v1/version", self.base_url);
+        
+        let response = self
+            .client
+            .get(&url)
+            .send()
+            .await
+            .map_err(|e| ChromaError::ConnectionFailed(e.to_string()))?;
+
+        if !response.status().is_success() {
+            return Err(ChromaError::RequestFailed(format!(
+                "Server returned status: {}",
+                response.status()
+            )));
+        }
+
+        // Version endpoint returns a plain string (with quotes)
+        let version: String = response
+            .json()
+            .await
+            .map_err(|e| ChromaError::InvalidResponse(e.to_string()))?;
+        
+        Ok(version)
+    }
+
+    /// Get combined server info (version + heartbeat)
+    pub async fn get_server_info(&self) -> Result<ServerInfo, ChromaError> {
+        let version = self.get_version().await?;
+        let heartbeat = self.heartbeat().await?;
+        
+        Ok(ServerInfo {
+            version,
+            heartbeat_ns: heartbeat.nanosecond_heartbeat,
+        })
     }
 
     /// Check if a tenant exists
