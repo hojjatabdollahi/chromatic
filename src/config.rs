@@ -22,12 +22,3 @@ impl Default for Config {
         }
     }
 }
-
-impl Default for Config {
-    fn default() -> Self {
-        Self {
-            server_url: String::from("http://localhost:8000"),
-            auth_token: String::new(),
-        }
-    }
-}

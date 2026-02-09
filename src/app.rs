@@ -427,6 +427,32 @@ impl AppModel {
                             .on_input(Message::AuthTokenChanged)
                             .width(Length::Fixed(300.0))
                     )
+            )
+            .add(
+                cosmic::widget::settings::item::builder(fl!("auth-header-type"))
+                    .description(fl!("auth-header-type-description"))
+                    .control(
+                        widget::row::with_capacity(2)
+                            .push(
+                                widget::button::text("Authorization: Bearer")
+                                    .class(if self.auth_header_type_input == "authorization" {
+                                        cosmic::theme::Button::Suggested
+                                    } else {
+                                        cosmic::theme::Button::Standard
+                                    })
+                                    .on_press(Message::AuthHeaderTypeChanged("authorization".to_string()))
+                            )
+                            .push(
+                                widget::button::text("X-Chroma-Token")
+                                    .class(if self.auth_header_type_input == "x-chroma-token" {
+                                        cosmic::theme::Button::Suggested
+                                    } else {
+                                        cosmic::theme::Button::Standard
+                                    })
+                                    .on_press(Message::AuthHeaderTypeChanged("x-chroma-token".to_string()))
+                            )
+                            .spacing(space_s)
+                    )
             );
 
         // Connection status and buttons
