@@ -586,23 +586,40 @@ pub enum BrowserMsg {
     SaveNewServer,
 }
 
+/// Minimum column width in pixels
+const MIN_COLUMN_WIDTH: f32 = 180.0;
+/// Maximum column width in pixels
+const MAX_COLUMN_WIDTH: f32 = 600.0;
+
+/// Calculates responsive column width based on window width.
+/// Formula: max(min_width, min(window_width / 4, max_width))
+fn calculate_column_width(window_width: f32) -> f32 {
+    let target = window_width / 4.0; // Aim for ~4 columns visible
+    target.clamp(MIN_COLUMN_WIDTH, MAX_COLUMN_WIDTH)
+}
+
 /// Renders the browser view.
 pub fn view<'a, Message: Clone + 'static>(
     state: &'a BrowserState,
     on_message: impl Fn(BrowserMsg) -> Message + Copy + 'a,
     space_s: u16,
     space_m: u16,
+    window_width: f32,
+    window_height: f32,
 ) -> Element<'a, Message> {
     use crate::widgets::MillerColumns;
     use cosmic::iced::widget::scrollable::{Direction, Scrollbar};
 
-    // Use a large fixed height for columns - this allows horizontal scrolling
-    let column_height = Length::Fixed(600.0);
+    // Calculate responsive column width
+    let column_width = calculate_column_width(window_width);
+
+    // Use window height for columns (minus some padding for header/notifications)
+    let column_height = Length::Fixed((window_height - 100.0).max(400.0));
 
     let miller_view: Element<'a, Message> = MillerColumns::new(&state.miller, move |msg| {
         on_message(BrowserMsg::Miller(msg))
     })
-    .column_width(Length::Fixed(220.0))
+    .column_width(Length::Fixed(column_width))
     .column_height(column_height)
     .spacing(space_s)
     .item_view(|item, is_selected| render_browser_item(item, is_selected))
@@ -625,7 +642,7 @@ pub fn view<'a, Message: Clone + 'static>(
         // Show miller columns + document preview
         widget::row::with_capacity(2)
             .push(miller_view)
-            .push(render_document_preview(doc, space_s))
+            .push(render_document_preview(doc, space_s, column_height))
             .spacing(space_m)
             .into()
     } else {
@@ -709,6 +726,7 @@ fn render_browser_item<'a, Message: 'static>(
 fn render_document_preview<'a, Message: 'static>(
     doc: &'a Document,
     space_s: u16,
+    height: Length,
 ) -> Element<'a, Message> {
     let mut content = widget::column::with_capacity(6).spacing(space_s);
 
@@ -756,7 +774,7 @@ fn render_document_preview<'a, Message: 'static>(
 
     widget::scrollable(content)
         .width(Length::Fixed(350.0))
-        .height(Length::Fixed(600.0))
+        .height(height)
         .into()
 }
 

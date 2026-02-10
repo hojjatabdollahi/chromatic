@@ -98,6 +98,10 @@ pub struct AppModel {
     pub show_new_collection_dialog: bool,
     /// Browser page state
     pub browser: BrowserState,
+    /// Current window width (for responsive column sizing)
+    pub window_width: f32,
+    /// Current window height
+    pub window_height: f32,
 }
 
 /// What's missing during validation
@@ -361,12 +365,23 @@ impl cosmic::Application for AppModel {
             new_collection_name: String::new(),
             show_new_collection_dialog: false,
             browser,
+            window_width: 1200.0, // Default, will be updated on resize
+            window_height: 800.0,
         };
+
+        // Close nav bar by default
+        app.core.nav_bar_set_toggled(false);
 
         // Create a startup command that sets the window title.
         let command = app.update_title();
 
         (app, command)
+    }
+
+    /// Called when window is resized - track dimensions for responsive layout
+    fn on_window_resize(&mut self, _id: cosmic::iced::window::Id, width: f32, height: f32) {
+        self.window_width = width;
+        self.window_height = height;
     }
 
     /// Elements to pack at the start of the header bar.
@@ -416,7 +431,14 @@ impl cosmic::Application for AppModel {
         let page_content: Element<_> =
             match self.nav.active_data::<Page>().unwrap_or(&Page::Browser) {
                 Page::Browser => {
-                    pages::browser::view(&self.browser, Message::Browser, space_s, space_m)
+                    pages::browser::view(
+                        &self.browser,
+                        Message::Browser,
+                        space_s,
+                        space_m,
+                        self.window_width,
+                        self.window_height,
+                    )
                 }
                 Page::Dashboard => pages::dashboard::view(self, space_s, space_m),
                 Page::Collections => {
