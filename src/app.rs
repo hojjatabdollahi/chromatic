@@ -1613,7 +1613,7 @@ impl AppModel {
                                 self.config.servers.iter().map(|s| s.name.clone()).collect();
                         }
                         BrowserDialog::AddTenant { server_index, name } => {
-                            // Add tenant to local cache only (will be created on server when needed)
+                            // Add tenant to local cache and persist to config
                             let mut tenants = self
                                 .browser
                                 .tenants_cache
@@ -1623,6 +1623,14 @@ impl AppModel {
                             if !tenants.contains(&name) {
                                 tenants.push(name.clone());
                                 self.browser.set_tenants(server_index, tenants);
+
+                                // Also save to config for persistence
+                                if server_index < self.config.servers.len() {
+                                    self.config.servers[server_index].add_tenant(&name);
+                                    if let Some(ref context) = self.config_context {
+                                        let _ = self.config.write_entry(context);
+                                    }
+                                }
                             }
                         }
                         BrowserDialog::ConfirmCreateTenant {

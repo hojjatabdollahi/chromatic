@@ -113,9 +113,18 @@ impl BrowserState {
     /// Creates a new browser state with the given server configs.
     pub fn new(servers: &[ServerConfig]) -> Self {
         let roots = Self::build_server_items(servers);
+
+        // Pre-populate tenants cache from config
+        let mut tenants_cache = HashMap::new();
+        for (index, config) in servers.iter().enumerate() {
+            if !config.tenants.is_empty() {
+                tenants_cache.insert(index, config.tenants.clone());
+            }
+        }
+
         Self {
             miller: MillerState::new(roots),
-            tenants_cache: HashMap::new(),
+            tenants_cache,
             databases_cache: HashMap::new(),
             collections_cache: HashMap::new(),
             documents_cache: HashMap::new(),
@@ -650,7 +659,7 @@ fn render_document_preview<'a, Message: 'static>(
 
     widget::scrollable(content)
         .width(Length::Fixed(350.0))
-        .height(Length::Fill)
+        .height(Length::Fixed(600.0))
         .into()
 }
 

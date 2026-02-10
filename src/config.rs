@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 
-use cosmic::cosmic_config::{self, CosmicConfigEntry, cosmic_config_derive::CosmicConfigEntry};
+use cosmic::cosmic_config::{self, cosmic_config_derive::CosmicConfigEntry, CosmicConfigEntry};
 use serde::{Deserialize, Serialize};
 
 /// A single server configuration
@@ -18,6 +18,9 @@ pub struct ServerConfig {
     pub tenant: String,
     /// Database name (default: default_database)
     pub database: String,
+    /// List of known tenants for this server (stored locally)
+    #[serde(default)]
+    pub tenants: Vec<String>,
 }
 
 impl Default for ServerConfig {
@@ -29,6 +32,7 @@ impl Default for ServerConfig {
             auth_header_type: String::from("authorization"),
             tenant: String::from("default_tenant"),
             database: String::from("default_database"),
+            tenants: Vec::new(),
         }
     }
 }
@@ -40,10 +44,20 @@ impl ServerConfig {
             ..Default::default()
         }
     }
+
+    /// Add a tenant to the local list if not already present
+    pub fn add_tenant(&mut self, tenant: &str) -> bool {
+        if !self.tenants.contains(&tenant.to_string()) {
+            self.tenants.push(tenant.to_string());
+            true
+        } else {
+            false
+        }
+    }
 }
 
 #[derive(Debug, Clone, CosmicConfigEntry, Eq, PartialEq)]
-#[version = 3]
+#[version = 4]
 pub struct Config {
     /// List of server configurations
     pub servers: Vec<ServerConfig>,
