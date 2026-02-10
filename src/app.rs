@@ -1524,7 +1524,21 @@ impl AppModel {
                     self.browser.set_databases(server_index, &tenant, databases);
                 }
                 Err(e) => {
-                    self.browser.set_databases_error(server_index, &tenant, e);
+                    // Check if the error indicates tenant doesn't exist
+                    let tenant_not_found = e.to_lowercase().contains("tenant")
+                        && (e.to_lowercase().contains("not found")
+                            || e.to_lowercase().contains("does not exist")
+                            || e.contains("404"));
+
+                    if tenant_not_found {
+                        // Show confirmation dialog to create tenant on server
+                        self.browser.dialog = Some(BrowserDialog::ConfirmCreateTenant {
+                            server_index,
+                            tenant: tenant.clone(),
+                        });
+                    } else {
+                        self.browser.set_databases_error(server_index, &tenant, e);
+                    }
                 }
             },
 
@@ -1573,6 +1587,8 @@ impl AppModel {
                         BrowserDialog::AddTenant { name, .. } => *name = value,
                         BrowserDialog::AddDatabase { name, .. } => *name = value,
                         BrowserDialog::AddCollection { name, .. } => *name = value,
+                        // ConfirmCreateTenant has no text input
+                        BrowserDialog::ConfirmCreateTenant { .. } => {}
                     }
                 }
             }
@@ -1597,7 +1613,23 @@ impl AppModel {
                                 self.config.servers.iter().map(|s| s.name.clone()).collect();
                         }
                         BrowserDialog::AddTenant { server_index, name } => {
-                            // Create tenant
+                            // Add tenant to local cache only (will be created on server when needed)
+                            let mut tenants = self
+                                .browser
+                                .tenants_cache
+                                .get(&server_index)
+                                .cloned()
+                                .unwrap_or_default();
+                            if !tenants.contains(&name) {
+                                tenants.push(name.clone());
+                                self.browser.set_tenants(server_index, tenants);
+                            }
+                        }
+                        BrowserDialog::ConfirmCreateTenant {
+                            server_index,
+                            tenant,
+                        } => {
+                            // User confirmed creating tenant on server
                             let config = &self.config.servers[server_index];
                             let url = config.server_url.clone();
                             let token = config.auth_token.clone();
@@ -1605,11 +1637,11 @@ impl AppModel {
 
                             return cosmic::task::future(async move {
                                 let result =
-                                    helpers::create_tenant(&url, &token, &auth_header_type, &name)
+                                    helpers::create_tenant(&url, &token, &auth_header_type, &tenant)
                                         .await;
                                 cosmic::Action::App(Message::Browser(BrowserMsg::TenantCreated {
                                     server_index,
-                                    tenant: name,
+                                    tenant,
                                     result,
                                 }))
                             });
@@ -1689,18 +1721,29 @@ impl AppModel {
                 result,
             } => match result {
                 Ok(()) => {
-                    // Refresh tenants for this server
-                    self.browser.set_tenants_loading(server_index);
+                    // Tenant created successfully - now load databases for this tenant
+                    self.browser.set_databases_loading(server_index, &tenant);
                     let config = &self.config.servers[server_index];
                     let url = config.server_url.clone();
                     let token = config.auth_token.clone();
                     let auth_header_type = config.auth_header_type.clone();
 
+                    // Show success notification
+                    self.notification_id_counter += 1;
+                    self.notifications.push(Notification {
+                        id: self.notification_id_counter,
+                        level: NotificationLevel::Success,
+                        title: "Tenant created".to_string(),
+                        message: format!("Tenant '{}' created on server", tenant),
+                    });
+
                     return cosmic::task::future(async move {
                         let result =
-                            helpers::fetch_tenants(&url, &token, &auth_header_type).await;
-                        cosmic::Action::App(Message::Browser(BrowserMsg::TenantsLoaded {
+                            helpers::fetch_databases(&url, &token, &auth_header_type, &tenant)
+                                .await;
+                        cosmic::Action::App(Message::Browser(BrowserMsg::DatabasesLoaded {
                             server_index,
+                            tenant,
                             result,
                         }))
                     });

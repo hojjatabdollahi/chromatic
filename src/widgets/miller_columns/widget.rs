@@ -34,6 +34,7 @@ where
     state: &'a MillerState<D>,
     on_message: Box<dyn Fn(MillerMessage<D>) -> Message + 'a>,
     column_width: Length,
+    column_height: Length,
     #[allow(dead_code)]
     min_column_width: u16,
     max_columns: Option<usize>,
@@ -63,6 +64,7 @@ where
             state,
             on_message: Box::new(on_message),
             column_width: Length::Fixed(200.0),
+            column_height: Length::Fill,
             min_column_width: 150,
             max_columns: None,
             spacing: 4,
@@ -78,6 +80,15 @@ where
     /// Default is `Length::Fixed(200.0)`.
     pub fn column_width(mut self, width: Length) -> Self {
         self.column_width = width;
+        self
+    }
+
+    /// Sets the column height strategy.
+    ///
+    /// Default is `Length::Fill`. Use `Length::Fixed(...)` or `Length::FillPortion(...)`
+    /// when placing inside a horizontal scrollable.
+    pub fn column_height(mut self, height: Length) -> Self {
+        self.column_height = height;
         self
     }
 
@@ -304,7 +315,7 @@ where
 
         widget::scrollable(column)
             .width(self.column_width)
-            .height(Length::Fill)
+            .height(self.column_height)
             .into()
     }
 
@@ -312,7 +323,7 @@ where
     fn render_loading_column(&self) -> Element<'a, Message> {
         widget::container(self.render_loading())
             .width(self.column_width)
-            .height(Length::Fill)
+            .height(self.column_height)
             .into()
     }
 
@@ -320,7 +331,7 @@ where
     fn render_error_column(&self, error: &str) -> Element<'a, Message> {
         widget::container(self.render_error(error))
             .width(self.column_width)
-            .height(Length::Fill)
+            .height(self.column_height)
             .into()
     }
 
@@ -349,7 +360,7 @@ where
                 row = row.push(
                     widget::container(column_element)
                         .class(cosmic::style::Container::Card)
-                        .height(Length::Fill),
+                        .height(self.column_height),
                 );
             } else {
                 // Child column - get the parent ID from selection
@@ -374,7 +385,7 @@ where
                 row = row.push(
                     widget::container(column_element)
                         .class(cosmic::style::Container::Card)
-                        .height(Length::Fill),
+                        .height(self.column_height),
                 );
             }
         }
@@ -382,7 +393,7 @@ where
         // Wrap in a container that allows horizontal overflow
         widget::container(row)
             .width(Length::Shrink)
-            .height(Length::Fill)
+            .height(self.column_height)
             .into()
     }
 }

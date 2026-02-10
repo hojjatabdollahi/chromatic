@@ -102,6 +102,11 @@ pub enum BrowserDialog {
         database: String,
         name: String,
     },
+    /// Confirmation dialog when tenant doesn't exist on server
+    ConfirmCreateTenant {
+        server_index: usize,
+        tenant: String,
+    },
 }
 
 impl BrowserState {
@@ -497,27 +502,42 @@ pub fn view<'a, Message: Clone + 'static>(
     space_m: u16,
 ) -> Element<'a, Message> {
     use crate::widgets::MillerColumns;
+    use cosmic::iced::widget::scrollable::{Direction, Scrollbar};
+
+    // Use a large fixed height for columns - this allows horizontal scrolling
+    let column_height = Length::Fixed(600.0);
 
     let miller_view: Element<'a, Message> = MillerColumns::new(&state.miller, move |msg| {
         on_message(BrowserMsg::Miller(msg))
     })
     .column_width(Length::Fixed(220.0))
+    .column_height(column_height)
     .spacing(space_s)
     .item_view(|item, is_selected| render_browser_item(item, is_selected))
     .into();
 
     // If we have a selected document, show the preview
-    let content: Element<'a, Message> = if let Some(ref doc) = state.selected_document {
+    let inner_content: Element<'a, Message> = if let Some(ref doc) = state.selected_document {
         widget::row::with_capacity(2)
             .push(miller_view)
             .push(render_document_preview(doc, space_s))
             .spacing(space_m)
-            .width(Length::Fill)
-            .height(Length::Fill)
             .into()
     } else {
         miller_view
     };
+
+    // Wrap in horizontal scrollable inside a container that fills space
+    let scrollable_content: Element<'a, Message> = widget::scrollable(inner_content)
+        .direction(Direction::Horizontal(Scrollbar::default()))
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .into();
+
+    let content: Element<'a, Message> = widget::container(scrollable_content)
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .into();
 
     // Wrap in dialog if one is open
     if let Some(ref dialog) = state.dialog {
@@ -634,50 +654,83 @@ fn render_document_preview<'a, Message: 'static>(
         .into()
 }
 
-/// Renders a dialog for adding new items.
+/// Renders a dialog for adding new items or confirming actions.
 fn render_dialog<'a, Message: Clone + 'static>(
     background: Element<'a, Message>,
     dialog: &'a BrowserDialog,
     on_message: impl Fn(BrowserMsg) -> Message + Copy + 'a,
     space_s: u16,
 ) -> Element<'a, Message> {
-    let (title, placeholder) = match dialog {
-        BrowserDialog::AddServer { .. } => ("Add Server", "Server name"),
-        BrowserDialog::AddTenant { .. } => ("Add Tenant", "Tenant name"),
-        BrowserDialog::AddDatabase { .. } => ("Add Database", "Database name"),
-        BrowserDialog::AddCollection { .. } => ("Add Collection", "Collection name"),
-    };
-
-    let value = match dialog {
-        BrowserDialog::AddServer { name } => name,
-        BrowserDialog::AddTenant { name, .. } => name,
-        BrowserDialog::AddDatabase { name, .. } => name,
-        BrowserDialog::AddCollection { name, .. } => name,
-    };
-
-    let dialog_content = widget::column::with_capacity(2)
-        .push(
-            widget::text_input(placeholder, value)
-                .on_input(move |s| on_message(BrowserMsg::DialogInputChanged(s)))
-                .on_submit(move |_| on_message(BrowserMsg::DialogConfirm))
-                .width(Length::Fixed(300.0)),
-        )
-        .push(
-            widget::row::with_capacity(2)
+    let dialog_widget: Element<'a, Message> = match dialog {
+        // Confirmation dialog for creating tenant on server
+        BrowserDialog::ConfirmCreateTenant { tenant, .. } => {
+            let dialog_content = widget::column::with_capacity(2)
+                .push(widget::text::body(format!(
+                    "Tenant '{}' doesn't exist on the server. Would you like to create it?",
+                    tenant
+                )))
                 .push(
-                    widget::button::standard("Cancel")
-                        .on_press(on_message(BrowserMsg::DialogCancel)),
+                    widget::row::with_capacity(2)
+                        .push(
+                            widget::button::standard("Cancel")
+                                .on_press(on_message(BrowserMsg::DialogCancel)),
+                        )
+                        .push(
+                            widget::button::suggested("Create Tenant")
+                                .on_press(on_message(BrowserMsg::DialogConfirm)),
+                        )
+                        .spacing(space_s),
+                )
+                .spacing(space_s);
+
+            widget::dialog()
+                .title("Create Tenant?")
+                .control(dialog_content)
+                .into()
+        }
+
+        // Input dialogs for adding items
+        _ => {
+            let (title, placeholder) = match dialog {
+                BrowserDialog::AddServer { .. } => ("Add Server", "Server name"),
+                BrowserDialog::AddTenant { .. } => ("Add Tenant", "Tenant name"),
+                BrowserDialog::AddDatabase { .. } => ("Add Database", "Database name"),
+                BrowserDialog::AddCollection { .. } => ("Add Collection", "Collection name"),
+                BrowserDialog::ConfirmCreateTenant { .. } => unreachable!(),
+            };
+
+            let value = match dialog {
+                BrowserDialog::AddServer { name } => name,
+                BrowserDialog::AddTenant { name, .. } => name,
+                BrowserDialog::AddDatabase { name, .. } => name,
+                BrowserDialog::AddCollection { name, .. } => name,
+                BrowserDialog::ConfirmCreateTenant { .. } => unreachable!(),
+            };
+
+            let dialog_content = widget::column::with_capacity(2)
+                .push(
+                    widget::text_input(placeholder, value)
+                        .on_input(move |s| on_message(BrowserMsg::DialogInputChanged(s)))
+                        .on_submit(move |_| on_message(BrowserMsg::DialogConfirm))
+                        .width(Length::Fixed(300.0)),
                 )
                 .push(
-                    widget::button::suggested("Create")
-                        .on_press(on_message(BrowserMsg::DialogConfirm)),
+                    widget::row::with_capacity(2)
+                        .push(
+                            widget::button::standard("Cancel")
+                                .on_press(on_message(BrowserMsg::DialogCancel)),
+                        )
+                        .push(
+                            widget::button::suggested("Create")
+                                .on_press(on_message(BrowserMsg::DialogConfirm)),
+                        )
+                        .spacing(space_s),
                 )
-                .spacing(space_s),
-        )
-        .spacing(space_s);
+                .spacing(space_s);
 
-    let dialog_widget: Element<'a, Message> =
-        widget::dialog().title(title).control(dialog_content).into();
+            widget::dialog().title(title).control(dialog_content).into()
+        }
+    };
 
     widget::popover(background)
         .modal(true)
