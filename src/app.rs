@@ -5,7 +5,7 @@ use crate::config::{Config, ServerConfig};
 use crate::fl;
 use crate::helpers;
 use crate::pages;
-use crate::pages::browser::{BrowserData, BrowserDialog, BrowserMsg, BrowserState};
+use crate::pages::browser::{AddServerForm, AddServerStatus, BrowserData, BrowserDialog, BrowserMsg, BrowserState};
 use crate::widgets::miller_columns::MillerMessage;
 use cosmic::app::context_drawer;
 use cosmic::cosmic_config::{self, CosmicConfigEntry};
@@ -1455,9 +1455,8 @@ impl AppModel {
                         // Handle activation (e.g., click on leaf items like "Add" buttons)
                         match &item.data {
                             BrowserData::AddServer => {
-                                self.browser.dialog = Some(BrowserDialog::AddServer {
-                                    name: String::new(),
-                                });
+                                // Show inline form instead of dialog
+                                self.browser.adding_server = Some(AddServerForm::new());
                             }
                             BrowserData::AddTenant { server_index } => {
                                 self.browser.dialog = Some(BrowserDialog::AddTenant {
@@ -1845,6 +1844,101 @@ impl AppModel {
                     });
                 }
             },
+
+            // Add Server form handlers
+            BrowserMsg::StartAddServer => {
+                self.browser.adding_server = Some(AddServerForm::new());
+            }
+
+            BrowserMsg::CancelAddServer => {
+                self.browser.adding_server = None;
+            }
+
+            BrowserMsg::AddServerNameChanged(name) => {
+                if let Some(ref mut form) = self.browser.adding_server {
+                    form.name = name;
+                }
+            }
+
+            BrowserMsg::AddServerUrlChanged(url) => {
+                if let Some(ref mut form) = self.browser.adding_server {
+                    form.url = url;
+                    // Reset status when URL changes
+                    form.status = AddServerStatus::Editing;
+                }
+            }
+
+            BrowserMsg::AddServerAuthTokenChanged(token) => {
+                if let Some(ref mut form) = self.browser.adding_server {
+                    form.auth_token = token;
+                    // Reset status when auth changes
+                    form.status = AddServerStatus::Editing;
+                }
+            }
+
+            BrowserMsg::AddServerAuthHeaderTypeChanged(auth_type) => {
+                if let Some(ref mut form) = self.browser.adding_server {
+                    form.auth_header_type = auth_type;
+                    // Reset status when auth type changes
+                    form.status = AddServerStatus::Editing;
+                }
+            }
+
+            BrowserMsg::TestNewServerConnection => {
+                if let Some(ref mut form) = self.browser.adding_server {
+                    form.status = AddServerStatus::Testing;
+                    let url = form.url.clone();
+                    let token = form.auth_token.clone();
+                    let auth_header_type = form.auth_header_type.clone();
+
+                    return cosmic::task::future(async move {
+                        let result =
+                            helpers::test_connection(&url, &token, &auth_header_type).await;
+                        cosmic::Action::App(Message::Browser(BrowserMsg::TestNewServerResult(
+                            result,
+                        )))
+                    });
+                }
+            }
+
+            BrowserMsg::TestNewServerResult(result) => {
+                if let Some(ref mut form) = self.browser.adding_server {
+                    form.status = match result {
+                        Ok(()) => AddServerStatus::TestSuccess,
+                        Err(e) => AddServerStatus::TestFailed(e),
+                    };
+                }
+            }
+
+            BrowserMsg::SaveNewServer => {
+                if let Some(form) = self.browser.adding_server.take() {
+                    // Only save if test was successful
+                    if form.status == AddServerStatus::TestSuccess && !form.name.is_empty() {
+                        let mut new_server = ServerConfig::new(&form.name);
+                        new_server.server_url = form.url;
+                        new_server.auth_token = form.auth_token;
+                        new_server.auth_header_type = form.auth_header_type;
+
+                        self.config.add_server(new_server);
+                        if let Some(ref context) = self.config_context {
+                            let _ = self.config.write_entry(context);
+                        }
+
+                        // Refresh browser with new servers
+                        self.browser.refresh_servers(&self.config.servers);
+                        self.server_names =
+                            self.config.servers.iter().map(|s| s.name.clone()).collect();
+
+                        self.notification_id_counter += 1;
+                        self.notifications.push(Notification {
+                            id: self.notification_id_counter,
+                            level: NotificationLevel::Success,
+                            title: "Server added".to_string(),
+                            message: "New server has been added successfully.".to_string(),
+                        });
+                    }
+                }
+            }
         }
 
         Task::none()

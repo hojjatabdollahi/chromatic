@@ -62,6 +62,38 @@ pub enum BrowserData {
     DocumentPreview { document: Document },
 }
 
+/// Form state for adding a new server.
+#[derive(Debug, Clone, Default)]
+pub struct AddServerForm {
+    pub name: String,
+    pub url: String,
+    pub auth_token: String,
+    pub auth_header_type: String,
+    pub status: AddServerStatus,
+}
+
+/// Status of the add server form.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub enum AddServerStatus {
+    #[default]
+    Editing,
+    Testing,
+    TestSuccess,
+    TestFailed(String),
+}
+
+impl AddServerForm {
+    pub fn new() -> Self {
+        Self {
+            name: String::new(),
+            url: String::from("http://localhost:8000"),
+            auth_token: String::new(),
+            auth_header_type: String::from("authorization"),
+            status: AddServerStatus::Editing,
+        }
+    }
+}
+
 /// State specific to the browser page.
 #[derive(Debug, Clone, Default)]
 pub struct BrowserState {
@@ -79,6 +111,8 @@ pub struct BrowserState {
     pub selected_document: Option<Document>,
     /// Dialog state for adding new items
     pub dialog: Option<BrowserDialog>,
+    /// Add server form (shown inline instead of dialog)
+    pub adding_server: Option<AddServerForm>,
 }
 
 /// Dialog types for adding new items.
@@ -130,6 +164,7 @@ impl BrowserState {
             documents_cache: HashMap::new(),
             selected_document: None,
             dialog: None,
+            adding_server: None,
         }
     }
 
@@ -501,6 +536,26 @@ pub enum BrowserMsg {
         database: String,
         result: Result<Collection, String>,
     },
+
+    // Add Server form messages
+    /// Start adding a new server (show form)
+    StartAddServer,
+    /// Cancel adding server
+    CancelAddServer,
+    /// Server name changed in add form
+    AddServerNameChanged(String),
+    /// Server URL changed in add form
+    AddServerUrlChanged(String),
+    /// Auth token changed in add form
+    AddServerAuthTokenChanged(String),
+    /// Auth header type changed in add form
+    AddServerAuthHeaderTypeChanged(String),
+    /// Test connection for new server
+    TestNewServerConnection,
+    /// Test connection result
+    TestNewServerResult(Result<(), String>),
+    /// Save the new server
+    SaveNewServer,
 }
 
 /// Renders the browser view.
@@ -525,8 +580,21 @@ pub fn view<'a, Message: Clone + 'static>(
     .item_view(|item, is_selected| render_browser_item(item, is_selected))
     .into();
 
-    // If we have a selected document, show the preview
-    let inner_content: Element<'a, Message> = if let Some(ref doc) = state.selected_document {
+    // Build inner content based on state
+    let inner_content: Element<'a, Message> = if let Some(ref form) = state.adding_server {
+        // Show miller columns + add server form
+        widget::row::with_capacity(2)
+            .push(miller_view)
+            .push(render_add_server_form(
+                form,
+                on_message,
+                space_s,
+                column_height,
+            ))
+            .spacing(space_m)
+            .into()
+    } else if let Some(ref doc) = state.selected_document {
+        // Show miller columns + document preview
         widget::row::with_capacity(2)
             .push(miller_view)
             .push(render_document_preview(doc, space_s))
@@ -661,6 +729,127 @@ fn render_document_preview<'a, Message: 'static>(
         .width(Length::Fixed(350.0))
         .height(Length::Fixed(600.0))
         .into()
+}
+
+/// Renders the add server form as a column.
+fn render_add_server_form<'a, Message: Clone + 'static>(
+    form: &'a AddServerForm,
+    on_message: impl Fn(BrowserMsg) -> Message + Copy + 'a,
+    space_s: u16,
+    height: Length,
+) -> Element<'a, Message> {
+    let mut content = widget::column::with_capacity(10).spacing(space_s);
+
+    // Title
+    content = content.push(widget::text::title4("Add New Server"));
+
+    // Server name
+    content = content.push(widget::text::body("Server Name"));
+    content = content.push(
+        widget::text_input("My Server", &form.name)
+            .on_input(move |s| on_message(BrowserMsg::AddServerNameChanged(s)))
+            .width(Length::Fixed(280.0)),
+    );
+
+    // Server URL
+    content = content.push(widget::text::body("Server URL"));
+    content = content.push(
+        widget::text_input("http://localhost:8000", &form.url)
+            .on_input(move |s| on_message(BrowserMsg::AddServerUrlChanged(s)))
+            .width(Length::Fixed(280.0)),
+    );
+
+    // Auth token
+    content = content.push(widget::text::body("Auth Token (optional)"));
+    content = content.push(
+        widget::secure_input("Token", &form.auth_token, None, true)
+            .on_input(move |s| on_message(BrowserMsg::AddServerAuthTokenChanged(s)))
+            .width(Length::Fixed(280.0)),
+    );
+
+    // Auth header type
+    content = content.push(widget::text::body("Auth Header Type"));
+    content = content.push(
+        widget::row::with_capacity(2)
+            .push(
+                widget::button::text("Bearer")
+                    .class(if form.auth_header_type == "authorization" {
+                        cosmic::theme::Button::Suggested
+                    } else {
+                        cosmic::theme::Button::Standard
+                    })
+                    .on_press(on_message(BrowserMsg::AddServerAuthHeaderTypeChanged(
+                        "authorization".to_string(),
+                    ))),
+            )
+            .push(
+                widget::button::text("X-Chroma-Token")
+                    .class(if form.auth_header_type == "x-chroma-token" {
+                        cosmic::theme::Button::Suggested
+                    } else {
+                        cosmic::theme::Button::Standard
+                    })
+                    .on_press(on_message(BrowserMsg::AddServerAuthHeaderTypeChanged(
+                        "x-chroma-token".to_string(),
+                    ))),
+            )
+            .spacing(space_s),
+    );
+
+    // Status message
+    match &form.status {
+        AddServerStatus::Editing => {}
+        AddServerStatus::Testing => {
+            content = content.push(widget::text::caption("Testing connection..."));
+        }
+        AddServerStatus::TestSuccess => {
+            // Use green color for success
+            content = content.push(widget::text::caption("Connection successful!").class(
+                cosmic::style::Text::Color(cosmic::iced::Color::from_rgb(0.2, 0.8, 0.2)),
+            ));
+        }
+        AddServerStatus::TestFailed(err) => {
+            content = content.push(
+                widget::text::caption(format!("Connection failed: {}", err))
+                    .class(cosmic::style::Text::Accent),
+            );
+        }
+    }
+
+    // Buttons
+    let is_testing = form.status == AddServerStatus::Testing;
+    let can_save = form.status == AddServerStatus::TestSuccess && !form.name.is_empty();
+
+    let mut buttons = widget::row::with_capacity(3).spacing(space_s);
+
+    buttons = buttons
+        .push(widget::button::standard("Cancel").on_press(on_message(BrowserMsg::CancelAddServer)));
+
+    if is_testing {
+        buttons = buttons.push(widget::button::standard("Testing..."));
+    } else {
+        buttons = buttons.push(
+            widget::button::standard("Test Connection")
+                .on_press(on_message(BrowserMsg::TestNewServerConnection)),
+        );
+    }
+
+    if can_save {
+        buttons = buttons.push(
+            widget::button::suggested("Save").on_press(on_message(BrowserMsg::SaveNewServer)),
+        );
+    }
+
+    content = content.push(buttons);
+
+    widget::container(
+        widget::scrollable(content)
+            .width(Length::Fixed(320.0))
+            .height(height),
+    )
+    .class(cosmic::style::Container::Card)
+    .padding(space_s)
+    .into()
 }
 
 /// Renders a dialog for adding new items or confirming actions.
