@@ -252,3 +252,18 @@ pub async fn create_database(
         .map(|_| ())
         .map_err(|e| e.to_string())
 }
+
+/// Delete a database
+pub async fn delete_database(
+    url: &str,
+    token: &str,
+    auth_header_type: &str,
+    name: &str,
+    tenant: &str,
+) -> Result<(), String> {
+    let client = create_client(url, token, auth_header_type).await?;
+    client
+        .delete_database(tenant, name)
+        .await
+        .map_err(|e| e.to_string())
+}

@@ -584,6 +584,51 @@ pub enum BrowserMsg {
     TestNewServerResult(Result<(), String>),
     /// Save the new server
     SaveNewServer,
+
+    // Delete actions
+    /// Request to delete a database
+    RequestDeleteDatabase {
+        server_index: usize,
+        tenant: String,
+        name: String,
+    },
+    /// Request to delete a collection
+    RequestDeleteCollection {
+        server_index: usize,
+        tenant: String,
+        database: String,
+        collection_id: String,
+        collection_name: String,
+    },
+    /// Request to delete a document
+    RequestDeleteDocument {
+        server_index: usize,
+        tenant: String,
+        database: String,
+        collection_id: String,
+        document_id: String,
+    },
+    /// Database deleted result
+    DatabaseDeleted {
+        server_index: usize,
+        tenant: String,
+        result: Result<(), String>,
+    },
+    /// Collection deleted result
+    CollectionDeleted {
+        server_index: usize,
+        tenant: String,
+        database: String,
+        result: Result<(), String>,
+    },
+    /// Document deleted result
+    DocumentDeleted {
+        server_index: usize,
+        tenant: String,
+        database: String,
+        collection_id: String,
+        result: Result<(), String>,
+    },
 }
 
 /// Minimum column width in pixels
@@ -622,7 +667,7 @@ pub fn view<'a, Message: Clone + 'static>(
     .column_width(Length::Fixed(column_width))
     .column_height(column_height)
     .spacing(space_s)
-    .item_view(|item, is_selected| render_browser_item(item, is_selected))
+    .item_view(move |item, is_selected| render_browser_item(item, is_selected, on_message))
     .into();
 
     // Build inner content based on state
@@ -670,8 +715,59 @@ pub fn view<'a, Message: Clone + 'static>(
     }
 }
 
-/// Renders a single browser item.
-fn render_browser_item<'a, Message: 'static>(
+/// Renders a single browser item as a card widget.
+fn render_browser_item<'a, Message: Clone + 'static>(
+    item: &MillerItem<BrowserData>,
+    is_selected: bool,
+    on_message: impl Fn(BrowserMsg) -> Message + Copy + 'a,
+) -> Element<'a, Message> {
+    match &item.data {
+        // Documents get a detailed card view
+        BrowserData::Document {
+            server_index,
+            tenant,
+            database,
+            collection_id,
+            document,
+        } => render_document_card(
+            document,
+            is_selected,
+            *server_index,
+            tenant.clone(),
+            database.clone(),
+            collection_id.clone(),
+            on_message,
+        ),
+
+        // Collections get a card view with delete button
+        BrowserData::Collection {
+            server_index,
+            tenant,
+            database,
+            collection,
+        } => render_collection_card(
+            collection,
+            is_selected,
+            *server_index,
+            tenant.clone(),
+            database.clone(),
+            on_message,
+        ),
+
+        // Databases get a card view with delete button
+        BrowserData::Database {
+            server_index,
+            tenant,
+            name,
+        } => render_database_card(name, is_selected, *server_index, tenant.clone(), on_message),
+
+        // Other items use simple rendering
+        _ => render_simple_item(item, is_selected),
+    }
+}
+
+/// Renders a simple item (servers, tenants, add buttons).
+fn render_simple_item<'a, Message: 'static>(
     item: &MillerItem<BrowserData>,
     is_selected: bool,
 ) -> Element<'a, Message> {
@@ -717,6 +813,194 @@ fn render_browser_item<'a, Message: 'static>(
 
     widget::container(row)
         .padding([6, 10])
+        .width(Length::Fill)
+        .class(container_class)
+        .into()
+}
+
+/// Renders a document as a card with details and delete action.
+fn render_document_card<'a, Message: Clone + 'static>(
+    doc: &Document,
+    is_selected: bool,
+    server_index: usize,
+    tenant: String,
+    database: String,
+    collection_id: String,
+    on_message: impl Fn(BrowserMsg) -> Message + Copy + 'a,
+) -> Element<'a, Message> {
+    let doc_id = doc.id.clone();
+    let doc_id_display = doc_id.clone();
+
+    // Document content preview (truncated)
+    let content_preview = doc
+        .document
+        .as_ref()
+        .map(|s| {
+            if s.len() > 80 {
+                format!("{}...", &s[..80])
+            } else {
+                s.clone()
+            }
+        })
+        .unwrap_or_else(|| "[No content]".to_string());
+
+    // Metadata count
+    let metadata_count = doc.metadata.as_ref().map(|m| m.len()).unwrap_or(0);
+
+    // Header row with ID and delete button
+    let header = widget::row::with_capacity(3)
+        .push(icon::from_name("text-x-generic-symbolic").size(16))
+        .push(
+            widget::text::body(doc_id_display)
+                .width(Length::Fill)
+                .class(cosmic::style::Text::Default),
+        )
+        .push(
+            widget::button::icon(icon::from_name("user-trash-symbolic"))
+                .class(cosmic::theme::Button::Destructive)
+                .padding(4)
+                .on_press(on_message(BrowserMsg::RequestDeleteDocument {
+                    server_index,
+                    tenant,
+                    database,
+                    collection_id,
+                    document_id: doc_id,
+                })),
+        )
+        .align_y(Alignment::Center)
+        .spacing(8);
+
+    // Content preview
+    let content = widget::text::caption(content_preview).class(cosmic::style::Text::Default);
+
+    // Metadata info
+    let metadata_info = widget::text::caption(format!("{} metadata fields", metadata_count))
+        .class(cosmic::style::Text::Accent);
+
+    let card_content = widget::column::with_capacity(3)
+        .push(header)
+        .push(content)
+        .push(metadata_info)
+        .spacing(4);
+
+    let container_class = if is_selected {
+        cosmic::style::Container::Primary
+    } else {
+        cosmic::style::Container::Card
+    };
+
+    widget::container(card_content)
+        .padding(10)
+        .width(Length::Fill)
+        .class(container_class)
+        .into()
+}
+
+/// Renders a collection as a card with delete action.
+fn render_collection_card<'a, Message: Clone + 'static>(
+    collection: &Collection,
+    is_selected: bool,
+    server_index: usize,
+    tenant: String,
+    database: String,
+    on_message: impl Fn(BrowserMsg) -> Message + Copy + 'a,
+) -> Element<'a, Message> {
+    let collection_id = collection.id.clone();
+    let collection_name = collection.name.clone();
+    let collection_name_display = collection_name.clone();
+
+    // Header row with name and delete button
+    let header = widget::row::with_capacity(4)
+        .push(icon::from_name("folder-symbolic").size(16))
+        .push(
+            widget::text::body(collection_name_display)
+                .width(Length::Fill)
+                .class(cosmic::style::Text::Default),
+        )
+        .push(icon::from_name("go-next-symbolic").size(12))
+        .push(
+            widget::button::icon(icon::from_name("user-trash-symbolic"))
+                .class(cosmic::theme::Button::Destructive)
+                .padding(4)
+                .on_press(on_message(BrowserMsg::RequestDeleteCollection {
+                    server_index,
+                    tenant,
+                    database,
+                    collection_id,
+                    collection_name,
+                })),
+        )
+        .align_y(Alignment::Center)
+        .spacing(8);
+
+    // Collection metadata count
+    let metadata_count = collection.metadata.as_ref().map(|m| m.len()).unwrap_or(0);
+    let metadata_info = if metadata_count > 0 {
+        widget::text::caption(format!("{} metadata fields", metadata_count))
+    } else {
+        widget::text::caption("No metadata")
+    }
+    .class(cosmic::style::Text::Accent);
+
+    let card_content = widget::column::with_capacity(2)
+        .push(header)
+        .push(metadata_info)
+        .spacing(4);
+
+    let container_class = if is_selected {
+        cosmic::style::Container::Primary
+    } else {
+        cosmic::style::Container::Card
+    };
+
+    widget::container(card_content)
+        .padding(10)
+        .width(Length::Fill)
+        .class(container_class)
+        .into()
+}
+
+/// Renders a database as a card with delete action.
+fn render_database_card<'a, Message: Clone + 'static>(
+    name: &str,
+    is_selected: bool,
+    server_index: usize,
+    tenant: String,
+    on_message: impl Fn(BrowserMsg) -> Message + Copy + 'a,
+) -> Element<'a, Message> {
+    let db_name = name.to_string();
+    let db_name_display = db_name.clone();
+
+    // Header row with name and delete button
+    let header = widget::row::with_capacity(4)
+        .push(icon::from_name("drive-harddisk-symbolic").size(16))
+        .push(
+            widget::text::body(db_name_display)
+                .width(Length::Fill)
+                .class(cosmic::style::Text::Default),
+        )
+        .push(icon::from_name("go-next-symbolic").size(12))
+        .push(
+            widget::button::icon(icon::from_name("user-trash-symbolic"))
+                .class(cosmic::theme::Button::Destructive)
+                .padding(4)
+                .on_press(on_message(BrowserMsg::RequestDeleteDatabase {
+                    server_index,
+                    tenant,
+                    name: db_name,
+                })),
+        )
+        .align_y(Alignment::Center)
+        .spacing(8);
+
+    let container_class = if is_selected {
+        cosmic::style::Container::Primary
+    } else {
+        cosmic::style::Container::Card
+    };
+
+    widget::container(header)
+        .padding(10)
         .width(Length::Fill)
         .class(container_class)
         .into()

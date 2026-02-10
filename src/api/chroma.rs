@@ -459,6 +459,46 @@ impl ChromaClient {
         })
     }
 
+    /// Delete a database within a tenant
+    pub async fn delete_database(
+        &self,
+        tenant: &str,
+        database: &str,
+    ) -> Result<(), ChromaError> {
+        let url = match self.api_version {
+            ApiVersion::V1 => format!(
+                "{}/databases/{}?tenant={}",
+                self.api_prefix(),
+                database,
+                tenant
+            ),
+            ApiVersion::V2 => format!(
+                "{}/tenants/{}/databases/{}",
+                self.api_prefix(),
+                tenant,
+                database
+            ),
+        };
+
+        let response = self
+            .client
+            .delete(&url)
+            .send()
+            .await
+            .map_err(|e| ChromaError::ConnectionFailed(e.to_string()))?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let body = response.text().await.unwrap_or_default();
+            return Err(ChromaError::RequestFailed(format!(
+                "Failed to delete database '{}' in tenant '{}': {} - {}",
+                database, tenant, status, body
+            )));
+        }
+
+        Ok(())
+    }
+
     /// Check what's missing (tenant, database, or both) and return detailed info
     pub async fn check_tenant_database_status(&self, tenant: &str, database: &str) -> (bool, bool) {
         let tenant_exists = self.get_tenant(tenant).await.is_ok();

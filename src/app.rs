@@ -1990,6 +1990,247 @@ impl AppModel {
                     }
                 }
             }
+
+            // Delete handlers
+            BrowserMsg::RequestDeleteDatabase {
+                server_index,
+                tenant,
+                name,
+            } => {
+                let config = &self.config.servers[server_index];
+                let url = config.server_url.clone();
+                let token = config.auth_token.clone();
+                let auth_header_type = config.auth_header_type.clone();
+
+                return cosmic::task::future(async move {
+                    let result =
+                        helpers::delete_database(&url, &token, &auth_header_type, &name, &tenant)
+                            .await;
+                    cosmic::Action::App(Message::Browser(BrowserMsg::DatabaseDeleted {
+                        server_index,
+                        tenant,
+                        result,
+                    }))
+                });
+            }
+
+            BrowserMsg::RequestDeleteCollection {
+                server_index,
+                tenant,
+                database,
+                collection_id,
+                collection_name: _,
+            } => {
+                let config = &self.config.servers[server_index];
+                let url = config.server_url.clone();
+                let token = config.auth_token.clone();
+                let auth_header_type = config.auth_header_type.clone();
+
+                return cosmic::task::future(async move {
+                    let result = helpers::delete_collection(
+                        &url,
+                        &token,
+                        &auth_header_type,
+                        &collection_id,
+                        &tenant,
+                        &database,
+                    )
+                    .await;
+                    cosmic::Action::App(Message::Browser(BrowserMsg::CollectionDeleted {
+                        server_index,
+                        tenant,
+                        database,
+                        result,
+                    }))
+                });
+            }
+
+            BrowserMsg::RequestDeleteDocument {
+                server_index,
+                tenant,
+                database,
+                collection_id,
+                document_id,
+            } => {
+                let config = &self.config.servers[server_index];
+                let url = config.server_url.clone();
+                let token = config.auth_token.clone();
+                let auth_header_type = config.auth_header_type.clone();
+
+                return cosmic::task::future(async move {
+                    let result = helpers::delete_document(
+                        &url,
+                        &token,
+                        &auth_header_type,
+                        &collection_id,
+                        &document_id,
+                        &tenant,
+                        &database,
+                    )
+                    .await;
+                    cosmic::Action::App(Message::Browser(BrowserMsg::DocumentDeleted {
+                        server_index,
+                        tenant,
+                        database,
+                        collection_id,
+                        result,
+                    }))
+                });
+            }
+
+            BrowserMsg::DatabaseDeleted {
+                server_index,
+                tenant,
+                result,
+            } => match result {
+                Ok(()) => {
+                    // Refresh databases list
+                    self.browser.set_databases_loading(server_index, &tenant);
+                    let config = &self.config.servers[server_index];
+                    let url = config.server_url.clone();
+                    let token = config.auth_token.clone();
+                    let auth_header_type = config.auth_header_type.clone();
+
+                    self.notification_id_counter += 1;
+                    self.notifications.push(Notification {
+                        id: self.notification_id_counter,
+                        level: NotificationLevel::Success,
+                        title: "Database deleted".to_string(),
+                        message: "Database has been deleted successfully.".to_string(),
+                    });
+
+                    return cosmic::task::future(async move {
+                        let result =
+                            helpers::fetch_databases(&url, &token, &auth_header_type, &tenant)
+                                .await;
+                        cosmic::Action::App(Message::Browser(BrowserMsg::DatabasesLoaded {
+                            server_index,
+                            tenant,
+                            result,
+                        }))
+                    });
+                }
+                Err(e) => {
+                    self.notification_id_counter += 1;
+                    self.notifications.push(Notification {
+                        id: self.notification_id_counter,
+                        level: NotificationLevel::Error,
+                        title: "Failed to delete database".to_string(),
+                        message: e,
+                    });
+                }
+            },
+
+            BrowserMsg::CollectionDeleted {
+                server_index,
+                tenant,
+                database,
+                result,
+            } => match result {
+                Ok(()) => {
+                    // Refresh collections list
+                    self.browser
+                        .set_collections_loading(server_index, &tenant, &database);
+                    let config = &self.config.servers[server_index];
+                    let url = config.server_url.clone();
+                    let token = config.auth_token.clone();
+                    let auth_header_type = config.auth_header_type.clone();
+
+                    self.notification_id_counter += 1;
+                    self.notifications.push(Notification {
+                        id: self.notification_id_counter,
+                        level: NotificationLevel::Success,
+                        title: "Collection deleted".to_string(),
+                        message: "Collection has been deleted successfully.".to_string(),
+                    });
+
+                    return cosmic::task::future(async move {
+                        let result = helpers::fetch_collections(
+                            &url,
+                            &token,
+                            &auth_header_type,
+                            &tenant,
+                            &database,
+                        )
+                        .await;
+                        cosmic::Action::App(Message::Browser(BrowserMsg::CollectionsLoaded {
+                            server_index,
+                            tenant,
+                            database,
+                            result,
+                        }))
+                    });
+                }
+                Err(e) => {
+                    self.notification_id_counter += 1;
+                    self.notifications.push(Notification {
+                        id: self.notification_id_counter,
+                        level: NotificationLevel::Error,
+                        title: "Failed to delete collection".to_string(),
+                        message: e,
+                    });
+                }
+            },
+
+            BrowserMsg::DocumentDeleted {
+                server_index,
+                tenant,
+                database,
+                collection_id,
+                result,
+            } => match result {
+                Ok(()) => {
+                    // Refresh documents list
+                    self.browser.set_documents_loading(
+                        server_index,
+                        &tenant,
+                        &database,
+                        &collection_id,
+                    );
+                    let config = &self.config.servers[server_index];
+                    let url = config.server_url.clone();
+                    let token = config.auth_token.clone();
+                    let auth_header_type = config.auth_header_type.clone();
+
+                    self.notification_id_counter += 1;
+                    self.notifications.push(Notification {
+                        id: self.notification_id_counter,
+                        level: NotificationLevel::Success,
+                        title: "Document deleted".to_string(),
+                        message: "Document has been deleted successfully.".to_string(),
+                    });
+
+                    return cosmic::task::future(async move {
+                        let result = helpers::fetch_documents(
+                            &url,
+                            &token,
+                            &auth_header_type,
+                            &collection_id,
+                            &tenant,
+                            &database,
+                            100,
+                            0,
+                        )
+                        .await;
+                        cosmic::Action::App(Message::Browser(BrowserMsg::DocumentsLoaded {
+                            server_index,
+                            tenant,
+                            database,
+                            collection_id,
+                            result,
+                        }))
+                    });
+                }
+                Err(e) => {
+                    self.notification_id_counter += 1;
+                    self.notifications.push(Notification {
+                        id: self.notification_id_counter,
+                        level: NotificationLevel::Error,
+                        title: "Failed to delete document".to_string(),
+                        message: e,
+                    });
+                }
+            },
         }
 
         Task::none()
