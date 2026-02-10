@@ -6,7 +6,11 @@
 use crate::api::{ChromaClient, Collection, Document, ServerInfo};
 
 /// Helper to create a client with auto-detected API version
-pub async fn create_client(url: &str, token: &str, auth_header_type: &str) -> Result<ChromaClient, String> {
+pub async fn create_client(
+    url: &str,
+    token: &str,
+    auth_header_type: &str,
+) -> Result<ChromaClient, String> {
     let api_version = ChromaClient::detect_api_version(url, token, auth_header_type)
         .await
         .map_err(|e| e.to_string())?;
@@ -23,7 +27,11 @@ pub async fn test_connection(url: &str, token: &str, auth_header_type: &str) -> 
 }
 
 /// Fetch server information
-pub async fn fetch_server_info(url: &str, token: &str, auth_header_type: &str) -> Result<ServerInfo, String> {
+pub async fn fetch_server_info(
+    url: &str,
+    token: &str,
+    auth_header_type: &str,
+) -> Result<ServerInfo, String> {
     let client = create_client(url, token, auth_header_type).await?;
     client.get_server_info().await.map_err(|e| e.to_string())
 }
@@ -36,8 +44,11 @@ pub async fn validate_tenant_database(
     tenant: &str,
     database: &str,
 ) -> Result<(), (bool, bool)> {
-    let client = create_client(url, token, auth_header_type).await.map_err(|_| (false, false))?;
-    let (tenant_exists, database_exists) = client.check_tenant_database_status(tenant, database).await;
+    let client = create_client(url, token, auth_header_type)
+        .await
+        .map_err(|_| (false, false))?;
+    let (tenant_exists, database_exists) =
+        client.check_tenant_database_status(tenant, database).await;
     if tenant_exists && database_exists {
         Ok(())
     } else {
@@ -56,17 +67,23 @@ pub async fn create_missing_resources(
     database_exists: bool,
 ) -> Result<(), String> {
     let client = create_client(url, token, auth_header_type).await?;
-    
+
     // Create tenant if needed
     if !tenant_exists {
-        client.create_tenant(tenant).await.map_err(|e| e.to_string())?;
+        client
+            .create_tenant(tenant)
+            .await
+            .map_err(|e| e.to_string())?;
     }
-    
+
     // Create database if needed
     if !database_exists {
-        client.create_database(tenant, database).await.map_err(|e| e.to_string())?;
+        client
+            .create_database(tenant, database)
+            .await
+            .map_err(|e| e.to_string())?;
     }
-    
+
     Ok(())
 }
 
@@ -78,7 +95,10 @@ pub async fn fetch_databases(
     tenant: &str,
 ) -> Result<Vec<String>, String> {
     let client = create_client(url, token, auth_header_type).await?;
-    let databases = client.list_databases(tenant).await.map_err(|e| e.to_string())?;
+    let databases = client
+        .list_databases(tenant)
+        .await
+        .map_err(|e| e.to_string())?;
     Ok(databases.into_iter().map(|db| db.name).collect())
 }
 
@@ -88,8 +108,14 @@ pub async fn fetch_tenants(
     token: &str,
     auth_header_type: &str,
 ) -> Result<Vec<String>, String> {
+    eprintln!("[DEBUG] fetch_tenants: Creating client for url={}", url);
     let client = create_client(url, token, auth_header_type).await?;
-    let tenants = client.list_tenants().await.map_err(|e| e.to_string())?;
+    eprintln!("[DEBUG] fetch_tenants: Client created, calling list_tenants...");
+    let tenants = client.list_tenants().await.map_err(|e| {
+        eprintln!("[DEBUG] fetch_tenants: Error from list_tenants: {}", e);
+        e.to_string()
+    })?;
+    eprintln!("[DEBUG] fetch_tenants: Got {} tenants", tenants.len());
     Ok(tenants.into_iter().map(|t| t.name).collect())
 }
 
@@ -102,7 +128,10 @@ pub async fn fetch_collections(
     database: &str,
 ) -> Result<Vec<Collection>, String> {
     let client = create_client(url, token, auth_header_type).await?;
-    client.list_collections(tenant, database).await.map_err(|e| e.to_string())
+    client
+        .list_collections(tenant, database)
+        .await
+        .map_err(|e| e.to_string())
 }
 
 /// Fetch documents from a collection with pagination
@@ -117,7 +146,10 @@ pub async fn fetch_documents(
     offset: usize,
 ) -> Result<Vec<Document>, String> {
     let client = create_client(url, token, auth_header_type).await?;
-    client.get_documents(collection_id, Some(limit), Some(offset), tenant, database).await.map_err(|e| e.to_string())
+    client
+        .get_documents(collection_id, Some(limit), Some(offset), tenant, database)
+        .await
+        .map_err(|e| e.to_string())
 }
 
 /// Fetch document count for a collection
@@ -130,7 +162,10 @@ pub async fn fetch_document_count(
     database: &str,
 ) -> Result<usize, String> {
     let client = create_client(url, token, auth_header_type).await?;
-    client.count_documents(collection_id, tenant, database).await.map_err(|e| e.to_string())
+    client
+        .count_documents(collection_id, tenant, database)
+        .await
+        .map_err(|e| e.to_string())
 }
 
 /// Create a new collection
@@ -143,7 +178,10 @@ pub async fn create_collection(
     database: &str,
 ) -> Result<Collection, String> {
     let client = create_client(url, token, auth_header_type).await?;
-    client.create_collection(name, tenant, database).await.map_err(|e| e.to_string())
+    client
+        .create_collection(name, tenant, database)
+        .await
+        .map_err(|e| e.to_string())
 }
 
 /// Delete a collection by name
@@ -156,7 +194,10 @@ pub async fn delete_collection(
     database: &str,
 ) -> Result<(), String> {
     let client = create_client(url, token, auth_header_type).await?;
-    client.delete_collection(collection_name, tenant, database).await.map_err(|e| e.to_string())
+    client
+        .delete_collection(collection_name, tenant, database)
+        .await
+        .map_err(|e| e.to_string())
 }
 
 /// Delete a single document from a collection
@@ -170,5 +211,13 @@ pub async fn delete_document(
     database: &str,
 ) -> Result<(), String> {
     let client = create_client(url, token, auth_header_type).await?;
-    client.delete_documents(collection_id, vec![document_id.to_string()], tenant, database).await.map_err(|e| e.to_string())
+    client
+        .delete_documents(
+            collection_id,
+            vec![document_id.to_string()],
+            tenant,
+            database,
+        )
+        .await
+        .map_err(|e| e.to_string())
 }

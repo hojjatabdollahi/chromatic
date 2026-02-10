@@ -8,8 +8,8 @@ use crate::pages;
 use cosmic::app::context_drawer;
 use cosmic::cosmic_config::{self, CosmicConfigEntry};
 use cosmic::iced::{Length, Subscription};
-use cosmic::widget::{self, about::About, icon, menu, nav_bar};
 use cosmic::prelude::*;
+use cosmic::widget::{self, about::About, icon, menu, nav_bar};
 use std::collections::HashMap;
 
 const REPOSITORY: &str = env!("CARGO_PKG_REPOSITORY");
@@ -32,7 +32,7 @@ pub struct AppModel {
     pub config: Config,
     /// Cosmic config context for saving
     config_context: Option<cosmic_config::Config>,
-    
+
     // === App-specific state ===
     /// List of collections from the server
     pub collections: Vec<Collection>,
@@ -82,7 +82,7 @@ pub struct AppModel {
     pub notifications: Vec<Notification>,
     /// Counter for generating unique notification IDs
     pub notification_id_counter: u32,
-    
+
     // === Dialog state ===
     /// Document being viewed in context drawer
     pub selected_document: Option<Document>,
@@ -152,7 +152,7 @@ pub enum Message {
     LaunchUrl(String),
     ToggleContextPage(ContextPage),
     UpdateConfig(Config),
-    
+
     // Settings inputs
     ServerNameChanged(String),
     ServerUrlChanged(String),
@@ -177,59 +177,59 @@ pub enum Message {
     SelectTenant(String),
     /// Select a database from the list
     SelectDatabase(String),
-    
+
     // Server management
     SelectServer(usize),
     AddNewServer,
     DeleteServer(usize),
-    
+
     // Connection & data
     TestConnection,
     ConnectionResult(Result<(), String>),
     FetchCollections,
     CollectionsLoaded(Result<Vec<Collection>, String>),
-    
+
     // Collection & documents
     SelectCollection(Collection),
     BackToCollections,
     FetchDocuments,
     DocumentsLoaded(Result<Vec<Document>, String>),
-    
+
     // Dashboard
     FetchServerInfo,
     ServerInfoLoaded(Result<ServerInfo, String>),
-    
+
     // Pagination
     CollectionsNextPage,
     CollectionsPrevPage,
     DocumentsNextPage,
     DocumentsPrevPage,
-    
+
     // Document count
     DocumentCountLoaded(Result<usize, String>),
-    
+
     // Notifications
     AddNotification(NotificationLevel, String, String),
     DismissNotification(u32),
     CopyNotification(u32),
-    
+
     // Document details
     ShowDocumentDetails(Document),
     CloseDocumentDetails,
-    
+
     // Collection management
     OpenNewCollectionDialog,
     CloseNewCollectionDialog,
     NewCollectionNameChanged(String),
     CreateCollection,
     CreateCollectionResult(Result<Collection, String>),
-    
+
     // Delete collection
     RequestDeleteCollection(Collection),
     ConfirmDeleteCollection,
     CancelDeleteCollection,
     DeleteCollectionResult(Result<(), String>),
-    
+
     // Delete document
     RequestDeleteDocument(Document),
     ConfirmDeleteDocument,
@@ -303,7 +303,7 @@ impl cosmic::Application for AppModel {
 
         // Get active server config for initializing input fields
         let active = config.active_config();
-        
+
         // Compute server names for dropdown
         let server_names: Vec<String> = config.servers.iter().map(|s| s.name.clone()).collect();
 
@@ -384,9 +384,8 @@ impl cosmic::Application for AppModel {
                 Message::ToggleContextPage(ContextPage::About.clone()),
             ),
             ContextPage::DocumentDetails => {
-                let content = pages::widgets::document_details_view(
-                    self.selected_document.as_ref(),
-                );
+                let content =
+                    pages::widgets::document_details_view(self.selected_document.as_ref());
                 context_drawer::context_drawer(content, Message::CloseDocumentDetails)
                     .title(fl!("document-details"))
             }
@@ -397,33 +396,35 @@ impl cosmic::Application for AppModel {
     fn view(&self) -> Element<'_, Self::Message> {
         let space_s = cosmic::theme::spacing().space_s;
         let space_m = cosmic::theme::spacing().space_m;
-        
-        let page_content: Element<_> = match self.nav.active_data::<Page>().unwrap_or(&Page::Dashboard) {
-            Page::Dashboard => pages::dashboard::view(self, space_s, space_m),
-            Page::Collections => {
-                // Show documents view if a collection is selected
-                if self.selected_collection.is_some() {
-                    pages::documents::view(self, space_s, space_m)
-                } else {
-                    pages::collections::view(self, space_s, space_m)
+
+        let page_content: Element<_> =
+            match self.nav.active_data::<Page>().unwrap_or(&Page::Dashboard) {
+                Page::Dashboard => pages::dashboard::view(self, space_s, space_m),
+                Page::Collections => {
+                    // Show documents view if a collection is selected
+                    if self.selected_collection.is_some() {
+                        pages::documents::view(self, space_s, space_m)
+                    } else {
+                        pages::collections::view(self, space_s, space_m)
+                    }
                 }
-            }
-            Page::Settings => pages::settings::view(self, space_s, space_m),
-        };
+                Page::Settings => pages::settings::view(self, space_s, space_m),
+            };
 
         // Build view with notifications at the top if any
         let mut content_column = widget::column::with_capacity(2);
-        
+
         // Add notifications section if there are any
         if !self.notifications.is_empty() {
             let notifications_row = widget::row::with_children(
-                self.notifications.iter()
-                    .map(|n| pages::widgets::notification_toast(n))
+                self.notifications
+                    .iter()
+                    .map(|n| pages::widgets::notification_toast(n)),
             )
             .spacing(space_s);
             content_column = content_column.push(notifications_row);
         }
-        
+
         content_column = content_column.push(page_content);
 
         widget::container(content_column)
@@ -554,7 +555,8 @@ impl cosmic::Application for AppModel {
                         let _ = self.config.write_entry(context);
                     }
                     // Update server names for dropdown
-                    self.server_names = self.config.servers.iter().map(|s| s.name.clone()).collect();
+                    self.server_names =
+                        self.config.servers.iter().map(|s| s.name.clone()).collect();
                     // Update input fields with the (possibly new) active server
                     let active = self.config.active_config();
                     self.server_name_input = active.name.clone();
@@ -584,11 +586,12 @@ impl cosmic::Application for AppModel {
                 }
                 // Update server names for dropdown (name might have changed)
                 self.server_names = self.config.servers.iter().map(|s| s.name.clone()).collect();
-                
+
                 if let Some(ref context) = self.config_context {
                     if let Err(e) = self.config.write_entry(context) {
                         eprintln!("Failed to save config: {}", e);
-                        self.settings_status = SettingsStatus::Error(format!("Failed to save: {}", e));
+                        self.settings_status =
+                            SettingsStatus::Error(format!("Failed to save: {}", e));
                         // Add error notification
                         return self.update(Message::AddNotification(
                             NotificationLevel::Error,
@@ -614,9 +617,16 @@ impl cosmic::Application for AppModel {
                 let auth_header_type = self.auth_header_type_input.clone();
                 let tenant = self.tenant_input.clone();
                 let database = self.database_input.clone();
-                
+
                 return cosmic::task::future(async move {
-                    let result = helpers::validate_tenant_database(&url, &token, &auth_header_type, &tenant, &database).await;
+                    let result = helpers::validate_tenant_database(
+                        &url,
+                        &token,
+                        &auth_header_type,
+                        &tenant,
+                        &database,
+                    )
+                    .await;
                     cosmic::Action::App(Message::SettingsValidationResult(result))
                 });
             }
@@ -631,19 +641,29 @@ impl cosmic::Application for AppModel {
                         // Build missing resources message
                         let mut missing_parts = Vec::new();
                         if !tenant_exists {
-                            missing_parts.push(format!("{} '{}'", fl!("tenant"), self.tenant_input));
+                            missing_parts.push(format!(
+                                "{} '{}'",
+                                fl!("tenant"),
+                                self.tenant_input
+                            ));
                         }
                         if !database_exists {
-                            missing_parts.push(format!("{} '{}'", fl!("database"), self.database_input));
+                            missing_parts.push(format!(
+                                "{} '{}'",
+                                fl!("database"),
+                                self.database_input
+                            ));
                         }
-                        let missing_msg = format!("{}: {}", fl!("missing-resources"), missing_parts.join(", "));
-                        
+                        let missing_msg =
+                            format!("{}: {}", fl!("missing-resources"), missing_parts.join(", "));
+
                         // Show what's missing and offer to create
-                        self.settings_status = SettingsStatus::MissingResources(ValidationMissing {
-                            tenant_exists,
-                            database_exists,
-                        });
-                        
+                        self.settings_status =
+                            SettingsStatus::MissingResources(ValidationMissing {
+                                tenant_exists,
+                                database_exists,
+                            });
+
                         // Add warning notification
                         return self.update(Message::AddNotification(
                             NotificationLevel::Warning,
@@ -656,12 +676,13 @@ impl cosmic::Application for AppModel {
 
             Message::CreateMissingResources => {
                 // Extract the missing info before reassigning settings_status
-                let missing_info = if let SettingsStatus::MissingResources(missing) = &self.settings_status {
-                    Some((missing.tenant_exists, missing.database_exists))
-                } else {
-                    None
-                };
-                
+                let missing_info =
+                    if let SettingsStatus::MissingResources(missing) = &self.settings_status {
+                        Some((missing.tenant_exists, missing.database_exists))
+                    } else {
+                        None
+                    };
+
                 if let Some((tenant_exists, database_exists)) = missing_info {
                     self.settings_status = SettingsStatus::Creating;
                     let url = self.server_url_input.clone();
@@ -669,9 +690,18 @@ impl cosmic::Application for AppModel {
                     let auth_header_type = self.auth_header_type_input.clone();
                     let tenant = self.tenant_input.clone();
                     let database = self.database_input.clone();
-                    
+
                     return cosmic::task::future(async move {
-                        let result = helpers::create_missing_resources(&url, &token, &auth_header_type, &tenant, &database, tenant_exists, database_exists).await;
+                        let result = helpers::create_missing_resources(
+                            &url,
+                            &token,
+                            &auth_header_type,
+                            &tenant,
+                            &database,
+                            tenant_exists,
+                            database_exists,
+                        )
+                        .await;
                         cosmic::Action::App(Message::CreateResourcesResult(result))
                     });
                 }
@@ -701,44 +731,57 @@ impl cosmic::Application for AppModel {
                 let token = self.auth_token_input.clone();
                 let auth_header_type = self.auth_header_type_input.clone();
                 let tenant = self.tenant_input.clone();
-                
+
                 return cosmic::task::future(async move {
-                    let result = helpers::fetch_databases(&url, &token, &auth_header_type, &tenant).await;
+                    let result =
+                        helpers::fetch_databases(&url, &token, &auth_header_type, &tenant).await;
                     cosmic::Action::App(Message::DatabasesLoaded(result))
                 });
             }
 
-            Message::DatabasesLoaded(result) => {
-                match result {
-                    Ok(databases) => {
-                        self.available_databases = databases;
-                        self.databases_load_error = None;
-                    }
-                    Err(e) => {
-                        self.available_databases.clear();
-                        self.databases_load_error = Some(e);
-                    }
+            Message::DatabasesLoaded(result) => match result {
+                Ok(databases) => {
+                    self.available_databases = databases;
+                    self.databases_load_error = None;
                 }
-            }
+                Err(e) => {
+                    self.available_databases.clear();
+                    self.databases_load_error = Some(e);
+                }
+            },
 
             Message::FetchTenants => {
                 let url = self.server_url_input.clone();
                 let token = self.auth_token_input.clone();
                 let auth_header_type = self.auth_header_type_input.clone();
-                
+
+                eprintln!(
+                    "[DEBUG] FetchTenants: url={}, auth_header_type={}",
+                    url, auth_header_type
+                );
+
                 return cosmic::task::future(async move {
+                    eprintln!("[DEBUG] FetchTenants: Starting fetch...");
                     let result = helpers::fetch_tenants(&url, &token, &auth_header_type).await;
+                    eprintln!("[DEBUG] FetchTenants: Result = {:?}", result);
                     cosmic::Action::App(Message::TenantsLoaded(result))
                 });
             }
 
             Message::TenantsLoaded(result) => {
+                eprintln!("[DEBUG] TenantsLoaded: {:?}", result);
                 match result {
                     Ok(tenants) => {
+                        eprintln!(
+                            "[DEBUG] TenantsLoaded: Found {} tenants: {:?}",
+                            tenants.len(),
+                            tenants
+                        );
                         self.available_tenants = tenants;
                         self.tenants_load_error = None;
                     }
                     Err(e) => {
+                        eprintln!("[DEBUG] TenantsLoaded: Error = {}", e);
                         self.available_tenants.clear();
                         self.tenants_load_error = Some(e);
                     }
@@ -762,7 +805,7 @@ impl cosmic::Application for AppModel {
                 let url = self.server_url_input.clone();
                 let token = self.auth_token_input.clone();
                 let auth_header_type = self.auth_header_type_input.clone();
-                
+
                 return cosmic::task::future(async move {
                     let result = helpers::test_connection(&url, &token, &auth_header_type).await;
                     cosmic::Action::App(Message::ConnectionResult(result))
@@ -800,24 +843,29 @@ impl cosmic::Application for AppModel {
                 let auth_header_type = active.auth_header_type.clone();
                 let tenant = active.tenant.clone();
                 let database = active.database.clone();
-                
+
                 return cosmic::task::future(async move {
-                    let result = helpers::fetch_collections(&url, &token, &auth_header_type, &tenant, &database).await;
+                    let result = helpers::fetch_collections(
+                        &url,
+                        &token,
+                        &auth_header_type,
+                        &tenant,
+                        &database,
+                    )
+                    .await;
                     cosmic::Action::App(Message::CollectionsLoaded(result))
                 });
             }
 
-            Message::CollectionsLoaded(result) => {
-                match result {
-                    Ok(collections) => {
-                        self.collections = collections;
-                        self.connection_status = ConnectionStatus::Connected;
-                    }
-                    Err(e) => {
-                        self.connection_status = ConnectionStatus::Error(e);
-                    }
+            Message::CollectionsLoaded(result) => match result {
+                Ok(collections) => {
+                    self.collections = collections;
+                    self.connection_status = ConnectionStatus::Connected;
                 }
-            }
+                Err(e) => {
+                    self.connection_status = ConnectionStatus::Error(e);
+                }
+            },
 
             Message::SelectCollection(collection) => {
                 let collection_id = collection.id.clone();
@@ -825,7 +873,7 @@ impl cosmic::Application for AppModel {
                 self.documents.clear();
                 self.documents_page = 0; // Reset to first page
                 self.documents_total = None; // Clear old count
-                
+
                 // Fetch document count
                 let active = self.config.active_config();
                 let url = active.server_url.clone();
@@ -833,16 +881,24 @@ impl cosmic::Application for AppModel {
                 let auth_header_type = active.auth_header_type.clone();
                 let tenant = active.tenant.clone();
                 let database = active.database.clone();
-                
+
                 // Spawn count fetch in background
                 let count_task = cosmic::task::future(async move {
-                    let result = helpers::fetch_document_count(&url, &token, &auth_header_type, &collection_id, &tenant, &database).await;
+                    let result = helpers::fetch_document_count(
+                        &url,
+                        &token,
+                        &auth_header_type,
+                        &collection_id,
+                        &tenant,
+                        &database,
+                    )
+                    .await;
                     cosmic::Action::App(Message::DocumentCountLoaded(result))
                 });
-                
+
                 // Also fetch documents
                 let docs_task = self.update(Message::FetchDocuments);
-                
+
                 return cosmic::task::batch(vec![count_task, docs_task]);
             }
 
@@ -863,25 +919,33 @@ impl cosmic::Application for AppModel {
                     let database = active.database.clone();
                     let limit = self.items_per_page;
                     let offset = self.documents_page * self.items_per_page;
-                    
+
                     return cosmic::task::future(async move {
-                        let result = helpers::fetch_documents(&url, &token, &auth_header_type, &collection_id, &tenant, &database, limit, offset).await;
+                        let result = helpers::fetch_documents(
+                            &url,
+                            &token,
+                            &auth_header_type,
+                            &collection_id,
+                            &tenant,
+                            &database,
+                            limit,
+                            offset,
+                        )
+                        .await;
                         cosmic::Action::App(Message::DocumentsLoaded(result))
                     });
                 }
             }
 
-            Message::DocumentsLoaded(result) => {
-                match result {
-                    Ok(documents) => {
-                        self.documents = documents;
-                        self.connection_status = ConnectionStatus::Connected;
-                    }
-                    Err(e) => {
-                        self.connection_status = ConnectionStatus::Error(e);
-                    }
+            Message::DocumentsLoaded(result) => match result {
+                Ok(documents) => {
+                    self.documents = documents;
+                    self.connection_status = ConnectionStatus::Connected;
                 }
-            }
+                Err(e) => {
+                    self.connection_status = ConnectionStatus::Error(e);
+                }
+            },
 
             Message::FetchServerInfo => {
                 self.connection_status = ConnectionStatus::Connecting;
@@ -889,7 +953,7 @@ impl cosmic::Application for AppModel {
                 let url = active.server_url.clone();
                 let token = active.auth_token.clone();
                 let auth_header_type = active.auth_header_type.clone();
-                
+
                 return cosmic::task::future(async move {
                     let result = helpers::fetch_server_info(&url, &token, &auth_header_type).await;
                     cosmic::Action::App(Message::ServerInfoLoaded(result))
@@ -913,7 +977,8 @@ impl cosmic::Application for AppModel {
 
             // Pagination
             Message::CollectionsNextPage => {
-                let total_pages = (self.collections.len() + self.items_per_page - 1) / self.items_per_page;
+                let total_pages =
+                    (self.collections.len() + self.items_per_page - 1) / self.items_per_page;
                 if self.collections_page + 1 < total_pages {
                     self.collections_page += 1;
                 }
@@ -939,16 +1004,14 @@ impl cosmic::Application for AppModel {
             }
 
             // Document count
-            Message::DocumentCountLoaded(result) => {
-                match result {
-                    Ok(count) => {
-                        self.documents_total = Some(count);
-                    }
-                    Err(e) => {
-                        eprintln!("Failed to load document count: {}", e);
-                    }
+            Message::DocumentCountLoaded(result) => match result {
+                Ok(count) => {
+                    self.documents_total = Some(count);
                 }
-            }
+                Err(e) => {
+                    eprintln!("Failed to load document count: {}", e);
+                }
+            },
 
             // Notifications
             Message::AddNotification(level, title, message) => {
@@ -1019,9 +1082,17 @@ impl cosmic::Application for AppModel {
                 let tenant = active.tenant.clone();
                 let database = active.database.clone();
                 let name = self.new_collection_name.clone();
-                
+
                 return cosmic::task::future(async move {
-                    let result = helpers::create_collection(&url, &token, &auth_header_type, &name, &tenant, &database).await;
+                    let result = helpers::create_collection(
+                        &url,
+                        &token,
+                        &auth_header_type,
+                        &name,
+                        &tenant,
+                        &database,
+                    )
+                    .await;
                     cosmic::Action::App(Message::CreateCollectionResult(result))
                 });
             }
@@ -1066,9 +1137,17 @@ impl cosmic::Application for AppModel {
                     let tenant = active.tenant.clone();
                     let database = active.database.clone();
                     let collection_name = collection.name.clone();
-                    
+
                     return cosmic::task::future(async move {
-                        let result = helpers::delete_collection(&url, &token, &auth_header_type, &collection_name, &tenant, &database).await;
+                        let result = helpers::delete_collection(
+                            &url,
+                            &token,
+                            &auth_header_type,
+                            &collection_name,
+                            &tenant,
+                            &database,
+                        )
+                        .await;
                         cosmic::Action::App(Message::DeleteCollectionResult(result))
                     });
                 }
@@ -1079,7 +1158,10 @@ impl cosmic::Application for AppModel {
             }
 
             Message::DeleteCollectionResult(result) => {
-                let deleted_name = self.delete_collection_target.as_ref().map(|c| c.name.clone());
+                let deleted_name = self
+                    .delete_collection_target
+                    .as_ref()
+                    .map(|c| c.name.clone());
                 self.delete_collection_target = None;
                 match result {
                     Ok(()) => {
@@ -1122,9 +1204,18 @@ impl cosmic::Application for AppModel {
                         let database = active.database.clone();
                         let collection_id = collection.id.clone();
                         let document_id = document.id.clone();
-                        
+
                         return cosmic::task::future(async move {
-                            let result = helpers::delete_document(&url, &token, &auth_header_type, &collection_id, &document_id, &tenant, &database).await;
+                            let result = helpers::delete_document(
+                                &url,
+                                &token,
+                                &auth_header_type,
+                                &collection_id,
+                                &document_id,
+                                &tenant,
+                                &database,
+                            )
+                            .await;
                             cosmic::Action::App(Message::DeleteDocumentResult(result))
                         });
                     }
