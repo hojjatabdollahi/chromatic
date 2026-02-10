@@ -1511,10 +1511,26 @@ impl AppModel {
                 server_index,
                 result,
             } => match result {
-                Ok(tenants) => {
+                Ok(mut tenants) => {
+                    // Merge with tenants from config (locally added tenants that may not exist on server yet)
+                    if server_index < self.config.servers.len() {
+                        for config_tenant in &self.config.servers[server_index].tenants {
+                            if !tenants.contains(config_tenant) {
+                                tenants.push(config_tenant.clone());
+                            }
+                        }
+                    }
                     self.browser.set_tenants(server_index, tenants);
                 }
                 Err(e) => {
+                    // Even on error, show tenants from config if available
+                    if server_index < self.config.servers.len() {
+                        let config_tenants = self.config.servers[server_index].tenants.clone();
+                        if !config_tenants.is_empty() {
+                            self.browser.set_tenants(server_index, config_tenants);
+                            return Task::none();
+                        }
+                    }
                     self.browser.set_tenants_error(server_index, e);
                 }
             },
