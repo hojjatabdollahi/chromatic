@@ -63,13 +63,17 @@ load-databases = Load Databases
 
 # Dashboard page
 current-server = Current Server
-server-version = Server Version
-api-version = API Version
-heartbeat = Heartbeat
+chroma-api = Chroma API
+server-time = Server Time
 current-tenant = Current Tenant
 current-database = Current Database
 collection-count = Collections
 dashboard-connect-hint = Click Refresh to connect to the server and load dashboard data.
+
+# Notifications
+notification-close = Close
+notification-copy = Copy
+notification-copied = Copied!
 
 # Documents page
 documents-count = documents

@@ -27,22 +27,29 @@ pub fn view(app: &AppModel, _space_s: u16, space_m: u16) -> Element<'_, Message>
     // Stats cards
     let server_name_card = stat_card(fl!("current-server"), active.name.clone());
 
+    // Note: ChromaDB's /version endpoint returns API version (1.0.0), not Docker image version
     let version_card = stat_card(
-        fl!("server-version"),
+        fl!("chroma-api"),
         app.server_info
             .as_ref()
-            .map(|i| i.version.clone())
+            .map(|i| format!("{} ({})", i.version, i.api_version))
             .unwrap_or_else(|| "-".to_string()),
     );
 
+    // Heartbeat is the server's current timestamp (nanoseconds since Unix epoch)
+    // It refreshes only when user presses Refresh button
     let heartbeat_card = stat_card(
-        fl!("heartbeat"),
+        fl!("server-time"),
         app.server_info
             .as_ref()
             .map(|i| {
-                // Convert nanoseconds to a readable format
+                // Convert nanoseconds to seconds (Unix timestamp)
                 let secs = i.heartbeat_ns / 1_000_000_000;
-                format!("{} s", secs)
+                // Format as human-readable datetime
+                let datetime = chrono::DateTime::from_timestamp(secs, 0)
+                    .map(|dt| dt.format("%Y-%m-%d %H:%M:%S").to_string())
+                    .unwrap_or_else(|| format!("{}", secs));
+                datetime
             })
             .unwrap_or_else(|| "-".to_string()),
     );
@@ -53,19 +60,10 @@ pub fn view(app: &AppModel, _space_s: u16, space_m: u16) -> Element<'_, Message>
 
     let collections_card = stat_card(fl!("collection-count"), app.collections.len().to_string());
 
-    let api_version_card = stat_card(
-        fl!("api-version"),
-        app.server_info
-            .as_ref()
-            .map(|i| i.api_version.clone())
-            .unwrap_or_else(|| "-".to_string()),
-    );
-
     // Use flex_row for responsive wrapping on small windows
     let stats_grid = widget::flex_row(vec![
         server_name_card,
         version_card,
-        api_version_card,
         heartbeat_card,
         collections_card,
         tenant_card,

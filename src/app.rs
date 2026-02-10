@@ -78,6 +78,10 @@ pub struct AppModel {
     pub items_per_page: usize,
     /// Total count of documents in selected collection (if known)
     pub documents_total: Option<usize>,
+    /// Active notifications to display
+    pub notifications: Vec<Notification>,
+    /// Counter for generating unique notification IDs
+    pub notification_id_counter: u32,
 }
 
 /// What's missing during validation
@@ -109,6 +113,24 @@ pub enum ConnectionStatus {
     Connecting,
     Connected,
     Error(String),
+}
+
+/// Notification level/type
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum NotificationLevel {
+    Info,
+    Success,
+    Warning,
+    Error,
+}
+
+/// A notification message to display to the user
+#[derive(Debug, Clone)]
+pub struct Notification {
+    pub id: u32,
+    pub level: NotificationLevel,
+    pub title: String,
+    pub message: String,
 }
 
 /// Messages emitted by the application and its widgets.
@@ -170,6 +192,14 @@ pub enum Message {
     CollectionsPrevPage,
     DocumentsNextPage,
     DocumentsPrevPage,
+    
+    // Document count
+    DocumentCountLoaded(Result<usize, String>),
+    
+    // Notifications
+    AddNotification(NotificationLevel, String, String),
+    DismissNotification(u32),
+    CopyNotification(u32),
 }
 
 /// Create a COSMIC application from the app model
@@ -273,6 +303,8 @@ impl cosmic::Application for AppModel {
             documents_page: 0,
             items_per_page: 20,
             documents_total: None,
+            notifications: Vec::new(),
+            notification_id_counter: 0,
         };
 
         // Create a startup command that sets the window title.
@@ -319,7 +351,7 @@ impl cosmic::Application for AppModel {
         let space_s = cosmic::theme::spacing().space_s;
         let space_m = cosmic::theme::spacing().space_m;
         
-        let content: Element<_> = match self.nav.active_data::<Page>().unwrap_or(&Page::Dashboard) {
+        let page_content: Element<_> = match self.nav.active_data::<Page>().unwrap_or(&Page::Dashboard) {
             Page::Dashboard => pages::dashboard::view(self, space_s, space_m),
             Page::Collections => {
                 // Show documents view if a collection is selected
@@ -332,7 +364,22 @@ impl cosmic::Application for AppModel {
             Page::Settings => pages::settings::view(self, space_s, space_m),
         };
 
-        widget::container(content)
+        // Build view with notifications at the top if any
+        let mut content_column = widget::column::with_capacity(2);
+        
+        // Add notifications section if there are any
+        if !self.notifications.is_empty() {
+            let notifications_row = widget::row::with_children(
+                self.notifications.iter()
+                    .map(|n| pages::widgets::notification_toast(n))
+            )
+            .spacing(space_s);
+            content_column = content_column.push(notifications_row);
+        }
+        
+        content_column = content_column.push(page_content);
+
+        widget::container(content_column)
             .width(Length::Fill)
             .height(Length::Fill)
             .padding(space_m)
@@ -680,11 +727,30 @@ impl cosmic::Application for AppModel {
             }
 
             Message::SelectCollection(collection) => {
+                let collection_id = collection.id.clone();
                 self.selected_collection = Some(collection);
                 self.documents.clear();
                 self.documents_page = 0; // Reset to first page
-                // Automatically fetch documents when selecting a collection
-                return self.update(Message::FetchDocuments);
+                self.documents_total = None; // Clear old count
+                
+                // Fetch document count
+                let active = self.config.active_config();
+                let url = active.server_url.clone();
+                let token = active.auth_token.clone();
+                let auth_header_type = active.auth_header_type.clone();
+                let tenant = active.tenant.clone();
+                let database = active.database.clone();
+                
+                // Spawn count fetch in background
+                let count_task = cosmic::task::future(async move {
+                    let result = helpers::fetch_document_count(&url, &token, &auth_header_type, &collection_id, &tenant, &database).await;
+                    cosmic::Action::App(Message::DocumentCountLoaded(result))
+                });
+                
+                // Also fetch documents
+                let docs_task = self.update(Message::FetchDocuments);
+                
+                return cosmic::task::batch(vec![count_task, docs_task]);
             }
 
             Message::BackToCollections => {
@@ -776,6 +842,49 @@ impl cosmic::Application for AppModel {
                 if self.documents_page > 0 {
                     self.documents_page -= 1;
                     return self.update(Message::FetchDocuments);
+                }
+            }
+
+            // Document count
+            Message::DocumentCountLoaded(result) => {
+                match result {
+                    Ok(count) => {
+                        self.documents_total = Some(count);
+                    }
+                    Err(e) => {
+                        eprintln!("Failed to load document count: {}", e);
+                    }
+                }
+            }
+
+            // Notifications
+            Message::AddNotification(level, title, message) => {
+                self.notification_id_counter += 1;
+                self.notifications.push(Notification {
+                    id: self.notification_id_counter,
+                    level,
+                    title,
+                    message,
+                });
+            }
+
+            Message::DismissNotification(id) => {
+                self.notifications.retain(|n| n.id != id);
+            }
+
+            Message::CopyNotification(id) => {
+                if let Some(notification) = self.notifications.iter().find(|n| n.id == id) {
+                    let text = format!("{}: {}", notification.title, notification.message);
+                    return cosmic::task::future(async move {
+                        if let Ok(mut clipboard) = arboard::Clipboard::new() {
+                            let _ = clipboard.set_text(&text);
+                        }
+                        cosmic::Action::App(Message::AddNotification(
+                            NotificationLevel::Success,
+                            fl!("notification-copied"),
+                            String::new(),
+                        ))
+                    });
                 }
             }
         }

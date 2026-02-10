@@ -546,4 +546,46 @@ impl ChromaClient {
 
         Ok(documents)
     }
+
+    /// Get the count of documents in a collection
+    pub async fn count_documents(
+        &self,
+        collection_id: &str,
+        tenant: &str,
+        database: &str,
+    ) -> Result<usize, ChromaError> {
+        let url = match self.api_version {
+            ApiVersion::V1 => format!(
+                "{}/databases/{}/collections/{}/count?tenant={}",
+                self.api_prefix(), database, collection_id, tenant
+            ),
+            ApiVersion::V2 => format!(
+                "{}/tenants/{}/databases/{}/collections/{}/count",
+                self.api_prefix(), tenant, database, collection_id
+            ),
+        };
+        
+        let response = self
+            .client
+            .get(&url)
+            .send()
+            .await
+            .map_err(|e| ChromaError::ConnectionFailed(e.to_string()))?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let body = response.text().await.unwrap_or_default();
+            return Err(ChromaError::RequestFailed(format!(
+                "Server returned status: {} - {}",
+                status, body
+            )));
+        }
+
+        let count: usize = response
+            .json()
+            .await
+            .map_err(|e| ChromaError::InvalidResponse(e.to_string()))?;
+        
+        Ok(count)
+    }
 }

@@ -32,14 +32,26 @@ pub fn view(app: &AppModel, space_s: u16, space_m: u16) -> Element<'_, Message> 
 
     let refresh_button = widget::button::standard(fl!("refresh")).on_press(Message::FetchDocuments);
 
-    // Show page info in toolbar
-    let page_info = widget::text::body(format!(
-        "{} {} | {} {}",
-        fl!("page"),
-        app.documents_page + 1,
-        app.documents.len(),
-        fl!("documents-count")
-    ));
+    // Show page info in toolbar with total count if available
+    let page_info = if let Some(total) = app.documents_total {
+        widget::text::body(format!(
+            "{} {} | {} {} ({} {})",
+            fl!("page"),
+            app.documents_page + 1,
+            app.documents.len(),
+            fl!("documents-count"),
+            total,
+            fl!("items-total")
+        ))
+    } else {
+        widget::text::body(format!(
+            "{} {} | {} {}",
+            fl!("page"),
+            app.documents_page + 1,
+            app.documents.len(),
+            fl!("documents-count")
+        ))
+    };
 
     let toolbar = widget::row::with_capacity(3)
         .push(refresh_button)

@@ -119,3 +119,16 @@ pub async fn fetch_documents(
     let client = create_client(url, token, auth_header_type).await?;
     client.get_documents(collection_id, Some(limit), Some(offset), tenant, database).await.map_err(|e| e.to_string())
 }
+
+/// Fetch document count for a collection
+pub async fn fetch_document_count(
+    url: &str,
+    token: &str,
+    auth_header_type: &str,
+    collection_id: &str,
+    tenant: &str,
+    database: &str,
+) -> Result<usize, String> {
+    let client = create_client(url, token, auth_header_type).await?;
+    client.count_documents(collection_id, tenant, database).await.map_err(|e| e.to_string())
+}
