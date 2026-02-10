@@ -5,7 +5,9 @@ use crate::config::{Config, ServerConfig};
 use crate::fl;
 use crate::helpers;
 use crate::pages;
-use crate::pages::browser::{AddServerForm, AddServerStatus, BrowserData, BrowserDialog, BrowserMsg, BrowserState};
+use crate::pages::browser::{
+    AddServerForm, AddServerStatus, BrowserData, BrowserDialog, BrowserMsg, BrowserState,
+};
 use crate::widgets::miller_columns::MillerMessage;
 use cosmic::app::context_drawer;
 use cosmic::cosmic_config::{self, CosmicConfigEntry};
@@ -430,16 +432,14 @@ impl cosmic::Application for AppModel {
 
         let page_content: Element<_> =
             match self.nav.active_data::<Page>().unwrap_or(&Page::Browser) {
-                Page::Browser => {
-                    pages::browser::view(
-                        &self.browser,
-                        Message::Browser,
-                        space_s,
-                        space_m,
-                        self.window_width,
-                        self.window_height,
-                    )
-                }
+                Page::Browser => pages::browser::view(
+                    &self.browser,
+                    Message::Browser,
+                    space_s,
+                    space_m,
+                    self.window_width,
+                    self.window_height,
+                ),
                 Page::Dashboard => pages::dashboard::view(self, space_s, space_m),
                 Page::Collections => {
                     // Show documents view if a collection is selected
@@ -1340,7 +1340,11 @@ impl AppModel {
         match msg {
             BrowserMsg::Miller(miller_msg) => {
                 match miller_msg {
-                    MillerMessage::Select { column: _, path, item } => {
+                    MillerMessage::Select {
+                        column: _,
+                        path,
+                        item,
+                    } => {
                         // Update selection in miller state using full path
                         self.browser.miller.select(path);
 
@@ -1363,10 +1367,12 @@ impl AppModel {
                                     let result =
                                         helpers::fetch_tenants(&url, &token, &auth_header_type)
                                             .await;
-                                    cosmic::Action::App(Message::Browser(BrowserMsg::TenantsLoaded {
-                                        server_index,
-                                        result,
-                                    }))
+                                    cosmic::Action::App(Message::Browser(
+                                        BrowserMsg::TenantsLoaded {
+                                            server_index,
+                                            result,
+                                        },
+                                    ))
                                 });
                             }
                             BrowserData::Tenant { server_index, name } => {
@@ -1406,8 +1412,11 @@ impl AppModel {
                                 let server_index = *server_index;
                                 let tenant = tenant.clone();
                                 let database = name.clone();
-                                self.browser
-                                    .set_collections_loading(server_index, &tenant, &database);
+                                self.browser.set_collections_loading(
+                                    server_index,
+                                    &tenant,
+                                    &database,
+                                );
 
                                 let config = &self.config.servers[server_index];
                                 let url = config.server_url.clone();
@@ -1641,8 +1650,13 @@ impl AppModel {
                     return self.browser.scroll_to_end();
                 }
                 Err(e) => {
-                    self.browser
-                        .set_documents_error(server_index, &tenant, &database, &collection_id, e);
+                    self.browser.set_documents_error(
+                        server_index,
+                        &tenant,
+                        &database,
+                        &collection_id,
+                        e,
+                    );
                 }
             },
 
@@ -1710,9 +1724,13 @@ impl AppModel {
                             let auth_header_type = config.auth_header_type.clone();
 
                             return cosmic::task::future(async move {
-                                let result =
-                                    helpers::create_tenant(&url, &token, &auth_header_type, &tenant)
-                                        .await;
+                                let result = helpers::create_tenant(
+                                    &url,
+                                    &token,
+                                    &auth_header_type,
+                                    &tenant,
+                                )
+                                .await;
                                 cosmic::Action::App(Message::Browser(BrowserMsg::TenantCreated {
                                     server_index,
                                     tenant,
@@ -2275,7 +2293,11 @@ impl AppModel {
                         self.config.servers[index].auth_token = form.auth_token;
                         self.config.servers[index].auth_header_type = form.auth_header_type;
                         // Save config
-                        if let Some(Err(e)) = self.config_context.as_ref().map(|ctx| self.config.write_entry(ctx)) {
+                        if let Some(Err(e)) = self
+                            .config_context
+                            .as_ref()
+                            .map(|ctx| self.config.write_entry(ctx))
+                        {
                             eprintln!("Failed to save config: {e}");
                         }
                         // Refresh server list in browser
@@ -2291,7 +2313,9 @@ impl AppModel {
                     // Clear cached data for this server
                     self.browser.tenants_cache.remove(&index);
                     // Remove databases and collections caches for this server
-                    let keys_to_remove: Vec<_> = self.browser.databases_cache
+                    let keys_to_remove: Vec<_> = self
+                        .browser
+                        .databases_cache
                         .keys()
                         .filter(|k| k.starts_with(&format!("{}:", index)))
                         .cloned()
@@ -2299,7 +2323,9 @@ impl AppModel {
                     for key in keys_to_remove {
                         self.browser.databases_cache.remove(&key);
                     }
-                    let keys_to_remove: Vec<_> = self.browser.collections_cache
+                    let keys_to_remove: Vec<_> = self
+                        .browser
+                        .collections_cache
                         .keys()
                         .filter(|k| k.starts_with(&format!("{}:", index)))
                         .cloned()
@@ -2307,10 +2333,10 @@ impl AppModel {
                     for key in keys_to_remove {
                         self.browser.collections_cache.remove(&key);
                     }
-                    
+
                     // Remove the server from config
                     self.config.servers.remove(index);
-                    
+
                     // Adjust active_server index if needed
                     if self.config.servers.is_empty() {
                         // No servers left - this shouldn't normally happen
@@ -2319,12 +2345,16 @@ impl AppModel {
                     } else if self.config.active_server >= self.config.servers.len() {
                         self.config.active_server = self.config.servers.len() - 1;
                     }
-                    
+
                     // Save config
-                    if let Some(Err(e)) = self.config_context.as_ref().map(|ctx| self.config.write_entry(ctx)) {
+                    if let Some(Err(e)) = self
+                        .config_context
+                        .as_ref()
+                        .map(|ctx| self.config.write_entry(ctx))
+                    {
                         eprintln!("Failed to save config: {e}");
                     }
-                    
+
                     // Refresh server list in browser
                     self.browser.refresh_servers(&self.config.servers);
                 }

@@ -778,8 +778,8 @@ pub fn view<'a, Message: Clone + 'static>(
     // Calculate responsive column width
     let column_width = calculate_column_width(window_width);
 
-    // Use window height for columns (minus some padding for header/notifications)
-    let column_height = Length::Fixed((window_height - 130.0).max(400.0));
+    // Use window height for columns (minus some padding for notifications)
+    let column_height = Length::Fixed((window_height - 100.0).max(400.0));
 
     let open_menu = &state.open_menu;
     let adding_server = &state.adding_server;
@@ -787,12 +787,22 @@ pub fn view<'a, Message: Clone + 'static>(
     let server_filter = &state.server_filter;
     let filter_lower = server_filter.to_lowercase();
 
+    // Create header for first (server) column
+    let header = render_server_header(
+        &state.server_filter,
+        state.server_filter_visible,
+        on_message,
+        space_s,
+        column_width,
+    );
+
     let miller_view: Element<'a, Message> = MillerColumns::new(&state.miller, move |msg| {
         on_message(BrowserMsg::Miller(msg))
     })
     .column_width(Length::Fixed(column_width))
     .column_height(column_height)
     .spacing(space_s)
+    .first_column_header(header)
     .item_view(move |item, is_selected| {
         // Filter server items based on filter text
         // "Add Server" is always visible, servers are filtered by name
@@ -844,31 +854,13 @@ pub fn view<'a, Message: Clone + 'static>(
     })
     .into();
 
-    // Create header for server column
-    let header = render_server_header(
-        &state.server_filter,
-        state.server_filter_visible,
-        on_message,
-        space_s,
-        column_width,
-    );
-
     // Wrap Miller columns in scrollable
-    let scrollable_content: Element<'a, Message> = widget::scrollable(miller_view)
+    let content: Element<'a, Message> = widget::scrollable(miller_view)
         .id(state.scrollable_id.clone())
         .direction(Direction::Both {
             vertical: Scrollbar::new().width(0).scroller_width(0), // Hidden
             horizontal: Scrollbar::default(),
         })
-        .width(Length::Fill)
-        .height(Length::Fill)
-        .into();
-
-    // Stack header above scrollable content
-    let content: Element<'a, Message> = widget::column::with_capacity(2)
-        .push(header)
-        .push(scrollable_content)
-        .spacing(0)
         .width(Length::Fill)
         .height(Length::Fill)
         .into();

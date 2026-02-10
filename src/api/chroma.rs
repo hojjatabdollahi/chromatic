@@ -460,11 +460,7 @@ impl ChromaClient {
     }
 
     /// Delete a database within a tenant
-    pub async fn delete_database(
-        &self,
-        tenant: &str,
-        database: &str,
-    ) -> Result<(), ChromaError> {
+    pub async fn delete_database(&self, tenant: &str, database: &str) -> Result<(), ChromaError> {
         let url = match self.api_version {
             ApiVersion::V1 => format!(
                 "{}/databases/{}?tenant={}",

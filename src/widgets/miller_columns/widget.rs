@@ -43,6 +43,8 @@ where
     loading_view: Option<Box<dyn Fn() -> Element<'a, Message> + 'a>>,
     empty_view: Option<Box<dyn Fn() -> Element<'a, Message> + 'a>>,
     error_view: Option<Box<dyn Fn(&str) -> Element<'a, Message> + 'a>>,
+    /// Optional header element for the first (root) column
+    first_column_header: Option<Element<'a, Message>>,
 }
 
 impl<'a, D, Message> MillerColumns<'a, D, Message>
@@ -72,7 +74,17 @@ where
             loading_view: None,
             empty_view: None,
             error_view: None,
+            first_column_header: None,
         }
+    }
+
+    /// Sets a header element for the first (root) column.
+    ///
+    /// The header will be displayed at the top of the first column,
+    /// above the list of items.
+    pub fn first_column_header(mut self, header: Element<'a, Message>) -> Self {
+        self.first_column_header = Some(header);
+        self
     }
 
     /// Sets the column width strategy.
@@ -336,7 +348,7 @@ where
     }
 
     /// Builds the widget and returns it as an Element.
-    pub fn build(self) -> Element<'a, Message> {
+    pub fn build(mut self) -> Element<'a, Message> {
         let visible_count = self.state.visible_column_count();
         let start_column = if let Some(max) = self.max_columns {
             if visible_count > max {
@@ -355,10 +367,20 @@ where
 
         for col in start_column..visible_count {
             if col == 0 {
-                // Root column
+                // Root column - optionally with header
                 let column_element = self.render_column(0, &self.state.roots, current_path.clone());
+                let column_content: Element<'a, Message> =
+                    if let Some(header) = self.first_column_header.take() {
+                        widget::column::with_capacity(2)
+                            .push(header)
+                            .push(column_element)
+                            .spacing(0)
+                            .into()
+                    } else {
+                        column_element
+                    };
                 row = row.push(
-                    widget::container(column_element)
+                    widget::container(column_content)
                         .class(cosmic::style::Container::Card)
                         .height(self.column_height),
                 );
