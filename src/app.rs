@@ -1472,8 +1472,10 @@ impl AppModel {
                                 });
                             }
                             BrowserData::Document { document, .. } => {
-                                // Show document preview
-                                self.browser.selected_document = Some(document.clone());
+                                // Show document preview in context drawer
+                                self.selected_document = Some(document.clone());
+                                self.context_page = ContextPage::DocumentDetails;
+                                self.core.window.show_context = true;
                             }
                             _ => {}
                         }
@@ -1514,8 +1516,10 @@ impl AppModel {
                                 });
                             }
                             BrowserData::Document { document, .. } => {
-                                // Show document preview
-                                self.browser.selected_document = Some(document.clone());
+                                // Show document preview in context drawer
+                                self.selected_document = Some(document.clone());
+                                self.context_page = ContextPage::DocumentDetails;
+                                self.core.window.show_context = true;
                             }
                             _ => {}
                         }
@@ -2232,6 +2236,88 @@ impl AppModel {
                 }
             },
 
+            // Server edit/delete actions
+            BrowserMsg::StartEditServer { index } => {
+                // Close menu and start editing
+                self.browser.open_menu = None;
+                // Create form pre-populated with current server config
+                let config = &self.config.servers[index];
+                let form = AddServerForm {
+                    name: config.name.clone(),
+                    url: config.server_url.clone(),
+                    auth_token: config.auth_token.clone(),
+                    auth_header_type: config.auth_header_type.clone(),
+                    status: AddServerStatus::Editing,
+                };
+                self.browser.editing_server = Some((index, form));
+            }
+            BrowserMsg::CancelEditServer => {
+                self.browser.editing_server = None;
+            }
+            BrowserMsg::SaveEditServer => {
+                if let Some((index, form)) = self.browser.editing_server.take() {
+                    // Update the server config
+                    if index < self.config.servers.len() {
+                        self.config.servers[index].name = form.name;
+                        self.config.servers[index].server_url = form.url;
+                        self.config.servers[index].auth_token = form.auth_token;
+                        self.config.servers[index].auth_header_type = form.auth_header_type;
+                        // Save config
+                        if let Some(Err(e)) = self.config_context.as_ref().map(|ctx| self.config.write_entry(ctx)) {
+                            eprintln!("Failed to save config: {e}");
+                        }
+                        // Refresh server list in browser
+                        self.browser.refresh_servers(&self.config.servers);
+                    }
+                }
+            }
+            BrowserMsg::RequestDeleteServer { index } => {
+                // Close menu
+                self.browser.open_menu = None;
+                // Delete the server
+                if index < self.config.servers.len() {
+                    // Clear cached data for this server
+                    self.browser.tenants_cache.remove(&index);
+                    // Remove databases and collections caches for this server
+                    let keys_to_remove: Vec<_> = self.browser.databases_cache
+                        .keys()
+                        .filter(|k| k.starts_with(&format!("{}:", index)))
+                        .cloned()
+                        .collect();
+                    for key in keys_to_remove {
+                        self.browser.databases_cache.remove(&key);
+                    }
+                    let keys_to_remove: Vec<_> = self.browser.collections_cache
+                        .keys()
+                        .filter(|k| k.starts_with(&format!("{}:", index)))
+                        .cloned()
+                        .collect();
+                    for key in keys_to_remove {
+                        self.browser.collections_cache.remove(&key);
+                    }
+                    
+                    // Remove the server from config
+                    self.config.servers.remove(index);
+                    
+                    // Adjust active_server index if needed
+                    if self.config.servers.is_empty() {
+                        // No servers left - this shouldn't normally happen
+                        // but let's handle it gracefully
+                        self.config.active_server = 0;
+                    } else if self.config.active_server >= self.config.servers.len() {
+                        self.config.active_server = self.config.servers.len() - 1;
+                    }
+                    
+                    // Save config
+                    if let Some(Err(e)) = self.config_context.as_ref().map(|ctx| self.config.write_entry(ctx)) {
+                        eprintln!("Failed to save config: {e}");
+                    }
+                    
+                    // Refresh server list in browser
+                    self.browser.refresh_servers(&self.config.servers);
+                }
+            }
+
             // Menu actions
             BrowserMsg::ToggleMenu(menu_id) => {
                 // Toggle menu: if same menu is open, close it; otherwise open the new one
@@ -2243,6 +2329,22 @@ impl AppModel {
             }
             BrowserMsg::CloseMenu => {
                 self.browser.open_menu = None;
+            }
+
+            // Filter messages
+            BrowserMsg::ToggleServerFilter => {
+                self.browser.server_filter_visible = !self.browser.server_filter_visible;
+                // Clear filter when hiding
+                if !self.browser.server_filter_visible {
+                    self.browser.server_filter.clear();
+                }
+            }
+            BrowserMsg::FilterServers(filter) => {
+                self.browser.server_filter = filter;
+            }
+            BrowserMsg::ClearServerFilter => {
+                self.browser.server_filter.clear();
+                self.browser.server_filter_visible = false;
             }
         }
 

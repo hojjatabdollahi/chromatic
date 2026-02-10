@@ -14,9 +14,9 @@ use crate::api::{Collection, Document};
 use crate::config::ServerConfig;
 use crate::widgets::miller_columns::{MillerItem, MillerItemType, MillerMessage, MillerState};
 use cosmic::iced::{Alignment, Length};
-use cosmic::iced_widget::scrollable::{snap_to, RelativeOffset};
+use cosmic::iced_widget::scrollable::{RelativeOffset, snap_to};
 use cosmic::prelude::*;
-use cosmic::widget::{self, icon, popover, Id};
+use cosmic::widget::{self, Id, icon, popover};
 use std::collections::HashMap;
 
 /// The type of data represented by a browser item.
@@ -98,6 +98,9 @@ impl AddServerForm {
 /// Unique identifier for items that can have a menu opened.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MenuItemId {
+    Server {
+        index: usize,
+    },
     Database {
         server_index: usize,
         tenant: String,
@@ -137,10 +140,16 @@ pub struct BrowserState {
     pub dialog: Option<BrowserDialog>,
     /// Add server form (shown inline instead of dialog)
     pub adding_server: Option<AddServerForm>,
+    /// Edit server form (server_index, form state)
+    pub editing_server: Option<(usize, AddServerForm)>,
     /// Scrollable ID for the browser view (for auto-scrolling)
     pub scrollable_id: Id,
     /// ID of the item whose menu is currently open (if any)
     pub open_menu: Option<MenuItemId>,
+    /// Filter text for the server column
+    pub server_filter: String,
+    /// Whether the server filter input is visible
+    pub server_filter_visible: bool,
 }
 
 impl Default for BrowserState {
@@ -154,8 +163,11 @@ impl Default for BrowserState {
             selected_document: None,
             dialog: None,
             adding_server: None,
+            editing_server: None,
             scrollable_id: Id::unique(),
             open_menu: None,
+            server_filter: String::new(),
+            server_filter_visible: false,
         }
     }
 }
@@ -210,8 +222,11 @@ impl BrowserState {
             selected_document: None,
             dialog: None,
             adding_server: None,
+            editing_server: None,
             scrollable_id: Id::unique(),
             open_menu: None,
+            server_filter: String::new(),
+            server_filter_visible: false,
         }
     }
 
@@ -612,6 +627,16 @@ pub enum BrowserMsg {
     /// Save the new server
     SaveNewServer,
 
+    // Server edit/delete actions
+    /// Start editing an existing server
+    StartEditServer { index: usize },
+    /// Cancel editing server
+    CancelEditServer,
+    /// Save the edited server
+    SaveEditServer,
+    /// Request to delete a server
+    RequestDeleteServer { index: usize },
+
     // Delete actions
     /// Request to delete a database
     RequestDeleteDatabase {
@@ -662,6 +687,14 @@ pub enum BrowserMsg {
     ToggleMenu(MenuItemId),
     /// Close any open menu
     CloseMenu,
+
+    // Filter actions
+    /// Toggle the server filter input visibility
+    ToggleServerFilter,
+    /// Update the server filter text
+    FilterServers(String),
+    /// Clear the server filter
+    ClearServerFilter,
 }
 
 /// Minimum column width in pixels
@@ -672,8 +705,62 @@ const MAX_COLUMN_WIDTH: f32 = 600.0;
 /// Calculates responsive column width based on window width.
 /// Formula: max(min_width, min(window_width / 4, max_width))
 fn calculate_column_width(window_width: f32) -> f32 {
-    let target = window_width / 4.0; // Aim for ~4 columns visible
+    let target = window_width / 1.0; // Aim for ~4 columns visible
     target.clamp(MIN_COLUMN_WIDTH, MAX_COLUMN_WIDTH)
+}
+
+/// Renders the server column header with filter functionality.
+fn render_server_header<'a, Message: Clone + 'static>(
+    filter: &'a str,
+    filter_visible: bool,
+    on_message: impl Fn(BrowserMsg) -> Message + Copy + 'a,
+    _space_s: u16,
+    column_width: f32,
+) -> Element<'a, Message> {
+    let spacing = cosmic::theme::spacing();
+
+    if filter_visible {
+        // Show filter input with clear button
+        let input = widget::text_input("Filter servers...", filter)
+            .on_input(move |s| on_message(BrowserMsg::FilterServers(s)))
+            .width(Length::Fill)
+            .size(14);
+
+        let clear_btn = widget::button::icon(icon::from_name("edit-clear-symbolic"))
+            .extra_small()
+            .on_press(on_message(BrowserMsg::ClearServerFilter));
+
+        widget::container(
+            widget::row::with_capacity(2)
+                .push(input)
+                .push(clear_btn)
+                .spacing(4)
+                .align_y(Alignment::Center),
+        )
+        .padding([spacing.space_xxs, spacing.space_xs])
+        .width(Length::Fixed(column_width))
+        .class(cosmic::style::Container::Card)
+        .into()
+    } else {
+        // Show title with filter toggle
+        let title = widget::text::heading("Servers").width(Length::Fill);
+
+        let filter_btn = widget::button::icon(icon::from_name("system-search-symbolic"))
+            .extra_small()
+            .on_press(on_message(BrowserMsg::ToggleServerFilter));
+
+        widget::container(
+            widget::row::with_capacity(2)
+                .push(title)
+                .push(filter_btn)
+                .spacing(4)
+                .align_y(Alignment::Center),
+        )
+        .padding([spacing.space_xxs, spacing.space_xs])
+        .width(Length::Fixed(column_width))
+        .class(cosmic::style::Container::Card)
+        .into()
+    }
 }
 
 /// Renders the browser view.
@@ -681,7 +768,7 @@ pub fn view<'a, Message: Clone + 'static>(
     state: &'a BrowserState,
     on_message: impl Fn(BrowserMsg) -> Message + Copy + 'a,
     space_s: u16,
-    space_m: u16,
+    _space_m: u16,
     window_width: f32,
     window_height: f32,
 ) -> Element<'a, Message> {
@@ -692,9 +779,14 @@ pub fn view<'a, Message: Clone + 'static>(
     let column_width = calculate_column_width(window_width);
 
     // Use window height for columns (minus some padding for header/notifications)
-    let column_height = Length::Fixed((window_height - 100.0).max(400.0));
+    let column_height = Length::Fixed((window_height - 130.0).max(400.0));
 
     let open_menu = &state.open_menu;
+    let adding_server = &state.adding_server;
+    let editing_server = &state.editing_server;
+    let server_filter = &state.server_filter;
+    let filter_lower = server_filter.to_lowercase();
+
     let miller_view: Element<'a, Message> = MillerColumns::new(&state.miller, move |msg| {
         on_message(BrowserMsg::Miller(msg))
     })
@@ -702,43 +794,81 @@ pub fn view<'a, Message: Clone + 'static>(
     .column_height(column_height)
     .spacing(space_s)
     .item_view(move |item, is_selected| {
-        render_browser_item(item, is_selected, open_menu, on_message)
+        // Filter server items based on filter text
+        // "Add Server" is always visible, servers are filtered by name
+        if !filter_lower.is_empty() {
+            match &item.data {
+                BrowserData::Server { config, .. } => {
+                    if !config.name.to_lowercase().contains(&filter_lower) {
+                        // Return an empty/hidden element for filtered out servers
+                        return widget::container(widget::Space::new(0, 0))
+                            .width(Length::Shrink)
+                            .height(Length::Shrink)
+                            .into();
+                    }
+                }
+                BrowserData::AddServer => {
+                    // Always show Add Server
+                }
+                _ => {
+                    // Non-server items are not filtered
+                }
+            }
+        }
+
+        // Check if this item should be replaced with an inline form
+        match &item.data {
+            // If we're adding a server and this is the AddServer item, show the form
+            BrowserData::AddServer if adding_server.is_some() => {
+                render_inline_server_form(
+                    adding_server.as_ref().unwrap(),
+                    None, // No index for new server
+                    on_message,
+                    space_s,
+                )
+            }
+            // If we're editing a server and this is that server, show the form
+            BrowserData::Server { index, .. }
+                if editing_server.as_ref().map(|(i, _)| i) == Some(index) =>
+            {
+                render_inline_server_form(
+                    &editing_server.as_ref().unwrap().1,
+                    Some(*index),
+                    on_message,
+                    space_s,
+                )
+            }
+            // Otherwise render normally
+            _ => render_browser_item(item, is_selected, open_menu, on_message),
+        }
     })
     .into();
 
-    // Build inner content based on state
-    let inner_content: Element<'a, Message> = if let Some(ref form) = state.adding_server {
-        // Show miller columns + add server form
-        widget::row::with_capacity(2)
-            .push(miller_view)
-            .push(render_add_server_form(
-                form,
-                on_message,
-                space_s,
-                column_height,
-            ))
-            .spacing(space_m)
-            .into()
-    } else if let Some(ref doc) = state.selected_document {
-        // Show miller columns + document preview
-        widget::row::with_capacity(2)
-            .push(miller_view)
-            .push(render_document_preview(doc, space_s, column_height))
-            .spacing(space_m)
-            .into()
-    } else {
-        miller_view
-    };
+    // Create header for server column
+    let header = render_server_header(
+        &state.server_filter,
+        state.server_filter_visible,
+        on_message,
+        space_s,
+        column_width,
+    );
 
-    // Wrap in horizontal scrollable inside a container that fills space
-    let scrollable_content: Element<'a, Message> = widget::scrollable(inner_content)
+    // Wrap Miller columns in scrollable
+    let scrollable_content: Element<'a, Message> = widget::scrollable(miller_view)
         .id(state.scrollable_id.clone())
-        .direction(Direction::Horizontal(Scrollbar::default()))
+        .direction(Direction::Both {
+            vertical: Scrollbar::new().width(0).scroller_width(0), // Hidden
+            horizontal: Scrollbar::default(),
+        })
         .width(Length::Fill)
         .height(Length::Fill)
         .into();
 
-    let content: Element<'a, Message> = widget::container(scrollable_content)
+    // Stack header above scrollable content
+    let content: Element<'a, Message> = widget::column::with_capacity(2)
+        .push(header)
+        .push(scrollable_content)
+        .spacing(0)
         .width(Length::Fill)
         .height(Length::Fill)
         .into();
@@ -806,6 +936,11 @@ fn render_browser_item<'a, Message: Clone + 'static>(
             open_menu,
             on_message,
         ),
+
+        // Servers get a card view with kebab menu
+        BrowserData::Server { index, config } => {
+            render_server_card(config, *index, is_selected, open_menu, on_message)
+        }
 
         // Other items use simple rendering
         _ => render_simple_item(item, is_selected),
@@ -1158,100 +1293,137 @@ fn render_database_card<'a, Message: Clone + 'static>(
         .into()
 }
 
-/// Renders the document preview panel.
-fn render_document_preview<'a, Message: 'static>(
-    doc: &'a Document,
-    space_s: u16,
-    height: Length,
+/// Renders a server config as a card with kebab menu for edit/delete.
+fn render_server_card<'a, Message: Clone + 'static>(
+    config: &ServerConfig,
+    index: usize,
+    is_selected: bool,
+    open_menu: &Option<MenuItemId>,
+    on_message: impl Fn(BrowserMsg) -> Message + Copy + 'a,
 ) -> Element<'a, Message> {
-    let mut content = widget::column::with_capacity(6).spacing(space_s);
+    // Clone values we need for the view to avoid lifetime issues
+    let name = config.name.clone();
+    let url = config.server_url.clone();
 
-    // Document ID
-    content = content.push(widget::text::title4("Document ID"));
-    content = content.push(
-        widget::container(widget::text::body(&doc.id))
-            .padding(space_s)
-            .width(Length::Fill)
-            .class(cosmic::style::Container::Card),
-    );
+    // Create menu item ID for this server
+    let menu_id = MenuItemId::Server { index };
+    let is_menu_open = open_menu.as_ref() == Some(&menu_id);
 
-    // Document content
-    content = content.push(widget::text::title4("Content"));
-    let doc_content = doc.document.as_deref().unwrap_or("[No content]");
-    content = content.push(
-        widget::container(widget::text::body(doc_content))
-            .padding(space_s)
-            .width(Length::Fill)
-            .class(cosmic::style::Container::Card),
-    );
+    // Kebab menu button
+    let menu_button = widget::button::icon(icon::from_name("view-more-symbolic"))
+        .class(cosmic::theme::Button::Icon)
+        .padding(4)
+        .on_press(on_message(BrowserMsg::ToggleMenu(menu_id.clone())));
 
-    // Metadata
-    if let Some(ref metadata) = doc.metadata {
-        if !metadata.is_empty() {
-            content = content.push(widget::text::title4("Metadata"));
+    // Popover content (edit and delete menu)
+    let edit_msg = on_message(BrowserMsg::StartEditServer { index });
+    let delete_msg = on_message(BrowserMsg::RequestDeleteServer { index });
+    let menu_content: Element<'a, Message> = widget::container(
+        widget::column::with_capacity(2)
+            .push(
+                widget::button::text("Edit")
+                    .on_press(edit_msg)
+                    .width(Length::Fill),
+            )
+            .push(
+                widget::button::destructive("Delete")
+                    .on_press(delete_msg)
+                    .width(Length::Fill),
+            )
+            .spacing(4),
+    )
+    .padding(4)
+    .width(Length::Fixed(120.0))
+    .class(cosmic::style::Container::Card)
+    .into();
 
-            let mut metadata_col = widget::column::with_capacity(metadata.len()).spacing(4);
-            for (key, value) in metadata {
-                let row = widget::row::with_capacity(2)
-                    .push(widget::text::body(format!("{}:", key)).width(Length::Fixed(120.0)))
-                    .push(widget::text::caption(value.to_string()))
-                    .spacing(8);
-                metadata_col = metadata_col.push(row);
-            }
+    // Wrap menu button in popover if menu is open
+    let menu_widget: Element<'a, Message> = if is_menu_open {
+        popover(menu_button)
+            .popup(menu_content)
+            .position(popover::Position::Bottom)
+            .on_close(on_message(BrowserMsg::CloseMenu))
+            .into()
+    } else {
+        menu_button.into()
+    };
 
-            content = content.push(
-                widget::container(metadata_col)
-                    .padding(space_s)
-                    .width(Length::Fill)
-                    .class(cosmic::style::Container::Card),
-            );
-        }
-    }
+    // Header row with icon, name, chevron, and menu button
+    let header = widget::row::with_capacity(4)
+        .push(icon::from_name("network-server-symbolic").size(16))
+        .push(
+            widget::column::with_capacity(2)
+                .push(widget::text::body(name).class(cosmic::style::Text::Default))
+                .push(widget::text::caption(url).class(cosmic::style::Text::Accent))
+                .spacing(2)
+                .width(Length::Fill),
+        )
+        .push(icon::from_name("go-next-symbolic").size(12))
+        .push(menu_widget)
+        .align_y(Alignment::Center)
+        .spacing(8);
 
-    widget::scrollable(content)
-        .width(Length::Fixed(350.0))
-        .height(height)
+    let container_class = if is_selected {
+        cosmic::style::Container::Primary
+    } else {
+        cosmic::style::Container::Card
+    };
+
+    widget::container(header)
+        .padding(10)
+        .width(Length::Fill)
+        .class(container_class)
         .into()
 }
 
-/// Renders the add server form as a column.
-fn render_add_server_form<'a, Message: Clone + 'static>(
+/// Renders an inline server form for add/edit within the column.
+fn render_inline_server_form<'a, Message: Clone + 'static>(
     form: &'a AddServerForm,
+    edit_index: Option<usize>, // None for add, Some(index) for edit
     on_message: impl Fn(BrowserMsg) -> Message + Copy + 'a,
     space_s: u16,
-    height: Length,
 ) -> Element<'a, Message> {
-    let mut content = widget::column::with_capacity(10).spacing(space_s);
+    let is_editing = edit_index.is_some();
+    let title = if is_editing {
+        "Edit Server"
+    } else {
+        "Add Server"
+    };
+
+    let mut content = widget::column::with_capacity(12).spacing(4);
 
     // Title
-    content = content.push(widget::text::title4("Add New Server"));
+    content = content.push(widget::text::body(title).class(cosmic::style::Text::Accent));
 
     // Server name
-    content = content.push(widget::text::body("Server Name"));
+    content = content.push(widget::text::caption("Name"));
     content = content.push(
         widget::text_input("My Server", &form.name)
             .on_input(move |s| on_message(BrowserMsg::AddServerNameChanged(s)))
-            .width(Length::Fixed(280.0)),
+            .width(Length::Fill)
+            .padding(4),
     );
 
     // Server URL
-    content = content.push(widget::text::body("Server URL"));
+    content = content.push(widget::text::caption("URL"));
     content = content.push(
         widget::text_input("http://localhost:8000", &form.url)
             .on_input(move |s| on_message(BrowserMsg::AddServerUrlChanged(s)))
-            .width(Length::Fixed(280.0)),
+            .width(Length::Fill)
+            .padding(4),
     );
 
     // Auth token
-    content = content.push(widget::text::body("Auth Token (optional)"));
+    content = content.push(widget::text::caption("Auth Token"));
     content = content.push(
         widget::secure_input("Token", &form.auth_token, None, true)
             .on_input(move |s| on_message(BrowserMsg::AddServerAuthTokenChanged(s)))
-            .width(Length::Fixed(280.0)),
+            .width(Length::Fill)
+            .padding(4),
     );
 
-    // Auth header type
-    content = content.push(widget::text::body("Auth Header Type"));
+    // Auth header type - compact toggle
+    content = content.push(widget::text::caption("Auth Type"));
     content = content.push(
         widget::row::with_capacity(2)
             .push(
@@ -1261,78 +1433,99 @@ fn render_add_server_form<'a, Message: Clone + 'static>(
                     } else {
                         cosmic::theme::Button::Standard
                     })
+                    .padding([2, 8])
                     .on_press(on_message(BrowserMsg::AddServerAuthHeaderTypeChanged(
                         "authorization".to_string(),
                     ))),
             )
             .push(
-                widget::button::text("X-Chroma-Token")
+                widget::button::text("X-Chroma")
                     .class(if form.auth_header_type == "x-chroma-token" {
                         cosmic::theme::Button::Suggested
                     } else {
                         cosmic::theme::Button::Standard
                     })
+                    .padding([2, 8])
                     .on_press(on_message(BrowserMsg::AddServerAuthHeaderTypeChanged(
                         "x-chroma-token".to_string(),
                     ))),
             )
-            .spacing(space_s),
+            .spacing(4),
     );
 
     // Status message
     match &form.status {
         AddServerStatus::Editing => {}
         AddServerStatus::Testing => {
-            content = content.push(widget::text::caption("Testing connection..."));
+            content = content.push(widget::text::caption("Testing..."));
         }
         AddServerStatus::TestSuccess => {
-            // Use green color for success
-            content = content.push(widget::text::caption("Connection successful!").class(
+            content = content.push(widget::text::caption("Connected!").class(
                 cosmic::style::Text::Color(cosmic::iced::Color::from_rgb(0.2, 0.8, 0.2)),
             ));
         }
         AddServerStatus::TestFailed(err) => {
+            let short_err = if err.len() > 30 {
+                format!("{}...", &err[..30])
+            } else {
+                err.clone()
+            };
             content = content.push(
-                widget::text::caption(format!("Connection failed: {}", err))
+                widget::text::caption(format!("Failed: {short_err}"))
                     .class(cosmic::style::Text::Accent),
             );
         }
     }
 
-    // Buttons
+    // Buttons - compact layout
     let is_testing = form.status == AddServerStatus::Testing;
     let can_save = form.status == AddServerStatus::TestSuccess && !form.name.is_empty();
 
-    let mut buttons = widget::row::with_capacity(3).spacing(space_s);
-
-    buttons = buttons
-        .push(widget::button::standard("Cancel").on_press(on_message(BrowserMsg::CancelAddServer)));
-
-    if is_testing {
-        buttons = buttons.push(widget::button::standard("Testing..."));
+    // Cancel and Test buttons
+    let cancel_msg = if is_editing {
+        on_message(BrowserMsg::CancelEditServer)
     } else {
-        buttons = buttons.push(
-            widget::button::standard("Test Connection")
+        on_message(BrowserMsg::CancelAddServer)
+    };
+
+    let mut button_row = widget::row::with_capacity(3).spacing(4);
+    button_row = button_row.push(
+        widget::button::text("Cancel")
+            .class(cosmic::theme::Button::Standard)
+            .padding([4, 8])
+            .on_press(cancel_msg),
+    );
+
+    if !is_testing {
+        button_row = button_row.push(
+            widget::button::text("Test")
+                .class(cosmic::theme::Button::Standard)
+                .padding([4, 8])
                 .on_press(on_message(BrowserMsg::TestNewServerConnection)),
         );
     }
 
+    content = content.push(button_row);
+
+    // Save button on separate row for emphasis
     if can_save {
-        buttons = buttons.push(
-            widget::button::suggested("Save").on_press(on_message(BrowserMsg::SaveNewServer)),
+        let save_msg = if is_editing {
+            on_message(BrowserMsg::SaveEditServer)
+        } else {
+            on_message(BrowserMsg::SaveNewServer)
+        };
+        content = content.push(
+            widget::button::suggested("Save")
+                .width(Length::Fill)
+                .on_press(save_msg),
         );
     }
 
-    content = content.push(buttons);
-
-    widget::container(
-        widget::scrollable(content)
-            .width(Length::Fixed(320.0))
-            .height(height),
-    )
-    .class(cosmic::style::Container::Card)
-    .padding(space_s)
-    .into()
+    widget::container(content)
+        .padding(space_s)
+        .width(Length::Fill)
+        .class(cosmic::style::Container::Card)
+        .into()
 }
 
 /// Renders a dialog for adding new items or confirming actions.
