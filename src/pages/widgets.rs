@@ -156,7 +156,7 @@ pub fn document_details_view(document: Option<&Document>) -> Element<'_, Message
     content.into()
 }
 
-/// Collection card widget with actions (show documents, delete)
+/// Collection card widget - clickable to show documents, with delete button
 pub fn collection_card(collection: &Collection, space_s: u16) -> Element<'_, Message> {
     let collection_for_select = collection.clone();
     let collection_for_delete = collection.clone();
@@ -168,36 +168,30 @@ pub fn collection_card(collection: &Collection, space_s: u16) -> Element<'_, Mes
         .spacing(4)
         .width(Length::Fill);
 
-    // Action buttons
-    let actions = widget::row::with_capacity(2)
-        .push(
-            widget::button::icon(icon::from_name("folder-open-symbolic"))
-                .on_press(Message::SelectCollection(collection_for_select))
-                .class(cosmic::theme::Button::Standard),
-        )
-        .push(
-            widget::button::icon(icon::from_name("user-trash-symbolic"))
-                .on_press(Message::RequestDeleteCollection(collection_for_delete))
-                .class(cosmic::theme::Button::Destructive),
-        )
-        .spacing(4)
-        .align_y(Alignment::Center);
+    // Delete button only
+    let delete_button = widget::button::icon(icon::from_name("user-trash-symbolic"))
+        .on_press(Message::RequestDeleteCollection(collection_for_delete))
+        .class(cosmic::theme::Button::Destructive);
 
-    // Main row with info and actions
+    // Main row with info and delete button
     let card_content = widget::row::with_capacity(2)
         .push(info_column)
-        .push(actions)
+        .push(delete_button)
         .spacing(space_s)
         .align_y(Alignment::Center);
 
-    widget::container(card_content)
-        .padding(space_s)
-        .width(Length::Fill)
-        .class(cosmic::style::Container::Card)
-        .into()
+    // Make the whole card clickable
+    widget::mouse_area(
+        widget::container(card_content)
+            .padding(space_s)
+            .width(Length::Fill)
+            .class(cosmic::style::Container::Card),
+    )
+    .on_press(Message::SelectCollection(collection_for_select))
+    .into()
 }
 
-/// Document card widget with actions (show details, delete)
+/// Document card widget - clickable to show details, with delete button
 pub fn document_card(doc: &Document, space_s: u16) -> Element<'_, Message> {
     let doc_for_details = doc.clone();
     let doc_for_delete = doc.clone();
@@ -237,26 +231,16 @@ pub fn document_card(doc: &Document, space_s: u16) -> Element<'_, Message> {
         .padding([2, 8])
         .class(cosmic::style::Container::Primary);
 
-    // Action buttons
-    let actions = widget::row::with_capacity(2)
-        .push(
-            widget::button::icon(icon::from_name("document-properties-symbolic"))
-                .on_press(Message::ShowDocumentDetails(doc_for_details))
-                .class(cosmic::theme::Button::Standard),
-        )
-        .push(
-            widget::button::icon(icon::from_name("user-trash-symbolic"))
-                .on_press(Message::RequestDeleteDocument(doc_for_delete))
-                .class(cosmic::theme::Button::Destructive),
-        )
-        .spacing(4)
-        .align_y(Alignment::Center);
+    // Delete button only
+    let delete_button = widget::button::icon(icon::from_name("user-trash-symbolic"))
+        .on_press(Message::RequestDeleteDocument(doc_for_delete))
+        .class(cosmic::theme::Button::Destructive);
 
-    // Header row with ID and actions
-    let header = widget::row::with_capacity(2)
+    // Header row with ID and delete button
+    let header = widget::row::with_capacity(3)
         .push(id_badge)
         .push(widget::Space::with_width(Length::Fill))
-        .push(actions)
+        .push(delete_button)
         .align_y(Alignment::Center);
 
     let mut card_content = widget::column::with_capacity(4).spacing(space_s);
@@ -276,9 +260,13 @@ pub fn document_card(doc: &Document, space_s: u16) -> Element<'_, Message> {
         );
     }
 
-    widget::container(card_content)
-        .padding(space_s)
-        .width(Length::Fill)
-        .class(cosmic::style::Container::Card)
-        .into()
+    // Make the whole card clickable
+    widget::mouse_area(
+        widget::container(card_content)
+            .padding(space_s)
+            .width(Length::Fill)
+            .class(cosmic::style::Container::Card),
+    )
+    .on_press(Message::ShowDocumentDetails(doc_for_details))
+    .into()
 }
