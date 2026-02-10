@@ -2231,6 +2231,19 @@ impl AppModel {
                     });
                 }
             },
+
+            // Menu actions
+            BrowserMsg::ToggleMenu(menu_id) => {
+                // Toggle menu: if same menu is open, close it; otherwise open the new one
+                if self.browser.open_menu.as_ref() == Some(&menu_id) {
+                    self.browser.open_menu = None;
+                } else {
+                    self.browser.open_menu = Some(menu_id);
+                }
+            }
+            BrowserMsg::CloseMenu => {
+                self.browser.open_menu = None;
+            }
         }
 
         Task::none()

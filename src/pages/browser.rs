@@ -16,7 +16,7 @@ use crate::widgets::miller_columns::{MillerItem, MillerItemType, MillerMessage, 
 use cosmic::iced::{Alignment, Length};
 use cosmic::iced_widget::scrollable::{snap_to, RelativeOffset};
 use cosmic::prelude::*;
-use cosmic::widget::{self, icon, Id};
+use cosmic::widget::{self, icon, popover, Id};
 use std::collections::HashMap;
 
 /// The type of data represented by a browser item.
@@ -95,6 +95,29 @@ impl AddServerForm {
     }
 }
 
+/// Unique identifier for items that can have a menu opened.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MenuItemId {
+    Database {
+        server_index: usize,
+        tenant: String,
+        name: String,
+    },
+    Collection {
+        server_index: usize,
+        tenant: String,
+        database: String,
+        collection_id: String,
+    },
+    Document {
+        server_index: usize,
+        tenant: String,
+        database: String,
+        collection_id: String,
+        document_id: String,
+    },
+}
+
 /// State specific to the browser page.
 #[derive(Debug, Clone)]
 pub struct BrowserState {
@@ -116,6 +139,8 @@ pub struct BrowserState {
     pub adding_server: Option<AddServerForm>,
     /// Scrollable ID for the browser view (for auto-scrolling)
     pub scrollable_id: Id,
+    /// ID of the item whose menu is currently open (if any)
+    pub open_menu: Option<MenuItemId>,
 }
 
 impl Default for BrowserState {
@@ -130,6 +155,7 @@ impl Default for BrowserState {
             dialog: None,
             adding_server: None,
             scrollable_id: Id::unique(),
+            open_menu: None,
         }
     }
 }
@@ -185,6 +211,7 @@ impl BrowserState {
             dialog: None,
             adding_server: None,
             scrollable_id: Id::unique(),
+            open_menu: None,
         }
     }
 
@@ -629,6 +656,12 @@ pub enum BrowserMsg {
         collection_id: String,
         result: Result<(), String>,
     },
+
+    // Menu actions
+    /// Toggle menu open/close for an item
+    ToggleMenu(MenuItemId),
+    /// Close any open menu
+    CloseMenu,
 }
 
 /// Minimum column width in pixels
@@ -661,13 +694,16 @@ pub fn view<'a, Message: Clone + 'static>(
     // Use window height for columns (minus some padding for header/notifications)
     let column_height = Length::Fixed((window_height - 100.0).max(400.0));
 
+    let open_menu = &state.open_menu;
     let miller_view: Element<'a, Message> = MillerColumns::new(&state.miller, move |msg| {
         on_message(BrowserMsg::Miller(msg))
     })
     .column_width(Length::Fixed(column_width))
     .column_height(column_height)
     .spacing(space_s)
-    .item_view(move |item, is_selected| render_browser_item(item, is_selected, on_message))
+    .item_view(move |item, is_selected| {
+        render_browser_item(item, is_selected, open_menu, on_message)
+    })
     .into();
 
     // Build inner content based on state
@@ -719,6 +755,7 @@ pub fn view<'a, Message: Clone + 'static>(
 fn render_browser_item<'a, Message: Clone + 'static>(
     item: &MillerItem<BrowserData>,
     is_selected: bool,
+    open_menu: &Option<MenuItemId>,
     on_message: impl Fn(BrowserMsg) -> Message + Copy + 'a,
 ) -> Element<'a, Message> {
     match &item.data {
@@ -736,6 +773,7 @@ fn render_browser_item<'a, Message: Clone + 'static>(
             tenant.clone(),
             database.clone(),
             collection_id.clone(),
+            open_menu,
             on_message,
         ),
 
@@ -751,6 +789,7 @@ fn render_browser_item<'a, Message: Clone + 'static>(
             *server_index,
             tenant.clone(),
             database.clone(),
+            open_menu,
             on_message,
         ),
 
@@ -759,7 +798,14 @@ fn render_browser_item<'a, Message: Clone + 'static>(
             server_index,
             tenant,
             name,
-        } => render_database_card(name, is_selected, *server_index, tenant.clone(), on_message),
+        } => render_database_card(
+            name,
+            is_selected,
+            *server_index,
+            tenant.clone(),
+            open_menu,
+            on_message,
+        ),
 
         // Other items use simple rendering
         _ => render_simple_item(item, is_selected),
@@ -818,7 +864,7 @@ fn render_simple_item<'a, Message: 'static>(
         .into()
 }
 
-/// Renders a document as a card with details and delete action.
+/// Renders a document as a card with details and kebab menu for actions.
 fn render_document_card<'a, Message: Clone + 'static>(
     doc: &Document,
     is_selected: bool,
@@ -826,10 +872,22 @@ fn render_document_card<'a, Message: Clone + 'static>(
     tenant: String,
     database: String,
     collection_id: String,
+    open_menu: &Option<MenuItemId>,
     on_message: impl Fn(BrowserMsg) -> Message + Copy + 'a,
 ) -> Element<'a, Message> {
     let doc_id = doc.id.clone();
     let doc_id_display = doc_id.clone();
+    let doc_id_for_delete = doc_id.clone();
+
+    // Create menu item ID for this document
+    let menu_id = MenuItemId::Document {
+        server_index,
+        tenant: tenant.clone(),
+        database: database.clone(),
+        collection_id: collection_id.clone(),
+        document_id: doc_id,
+    };
+    let is_menu_open = open_menu.as_ref() == Some(&menu_id);
 
     // Document content preview (truncated)
     let content_preview = doc
@@ -847,7 +905,42 @@ fn render_document_card<'a, Message: Clone + 'static>(
     // Metadata count
     let metadata_count = doc.metadata.as_ref().map(|m| m.len()).unwrap_or(0);
 
-    // Header row with ID and delete button
+    // Kebab menu button
+    let menu_button = widget::button::icon(icon::from_name("view-more-symbolic"))
+        .class(cosmic::theme::Button::Icon)
+        .padding(4)
+        .on_press(on_message(BrowserMsg::ToggleMenu(menu_id.clone())));
+
+    // Popover content (delete menu)
+    let delete_msg = on_message(BrowserMsg::RequestDeleteDocument {
+        server_index,
+        tenant: tenant.clone(),
+        database: database.clone(),
+        collection_id: collection_id.clone(),
+        document_id: doc_id_for_delete,
+    });
+    let menu_content: Element<'a, Message> = widget::container(
+        widget::button::destructive("Delete")
+            .on_press(delete_msg)
+            .width(Length::Fill),
+    )
+    .padding(4)
+    .width(Length::Fixed(120.0))
+    .class(cosmic::style::Container::Card)
+    .into();
+
+    // Wrap menu button in popover if menu is open
+    let menu_widget: Element<'a, Message> = if is_menu_open {
+        popover(menu_button)
+            .popup(menu_content)
+            .position(popover::Position::Bottom)
+            .on_close(on_message(BrowserMsg::CloseMenu))
+            .into()
+    } else {
+        menu_button.into()
+    };
+
+    // Header row with ID and menu button
     let header = widget::row::with_capacity(3)
         .push(icon::from_name("text-x-generic-symbolic").size(16))
         .push(
@@ -855,18 +948,7 @@ fn render_document_card<'a, Message: Clone + 'static>(
                 .width(Length::Fill)
                 .class(cosmic::style::Text::Default),
         )
-        .push(
-            widget::button::icon(icon::from_name("user-trash-symbolic"))
-                .class(cosmic::theme::Button::Destructive)
-                .padding(4)
-                .on_press(on_message(BrowserMsg::RequestDeleteDocument {
-                    server_index,
-                    tenant,
-                    database,
-                    collection_id,
-                    document_id: doc_id,
-                })),
-        )
+        .push(menu_widget)
         .align_y(Alignment::Center)
         .spacing(8);
 
@@ -896,20 +978,67 @@ fn render_document_card<'a, Message: Clone + 'static>(
         .into()
 }
 
-/// Renders a collection as a card with delete action.
+/// Renders a collection as a card with kebab menu for actions.
 fn render_collection_card<'a, Message: Clone + 'static>(
     collection: &Collection,
     is_selected: bool,
     server_index: usize,
     tenant: String,
     database: String,
+    open_menu: &Option<MenuItemId>,
     on_message: impl Fn(BrowserMsg) -> Message + Copy + 'a,
 ) -> Element<'a, Message> {
     let collection_id = collection.id.clone();
+    let collection_id_for_delete = collection_id.clone();
     let collection_name = collection.name.clone();
     let collection_name_display = collection_name.clone();
+    let collection_name_for_delete = collection_name.clone();
 
-    // Header row with name and delete button
+    // Create menu item ID for this collection
+    let menu_id = MenuItemId::Collection {
+        server_index,
+        tenant: tenant.clone(),
+        database: database.clone(),
+        collection_id,
+    };
+    let is_menu_open = open_menu.as_ref() == Some(&menu_id);
+
+    // Kebab menu button
+    let menu_button = widget::button::icon(icon::from_name("view-more-symbolic"))
+        .class(cosmic::theme::Button::Icon)
+        .padding(4)
+        .on_press(on_message(BrowserMsg::ToggleMenu(menu_id.clone())));
+
+    // Popover content (delete menu)
+    let delete_msg = on_message(BrowserMsg::RequestDeleteCollection {
+        server_index,
+        tenant: tenant.clone(),
+        database: database.clone(),
+        collection_id: collection_id_for_delete,
+        collection_name: collection_name_for_delete,
+    });
+    let menu_content: Element<'a, Message> = widget::container(
+        widget::button::destructive("Delete")
+            .on_press(delete_msg)
+            .width(Length::Fill),
+    )
+    .padding(4)
+    .width(Length::Fixed(120.0))
+    .class(cosmic::style::Container::Card)
+    .into();
+
+    // Wrap menu button in popover if menu is open
+    let menu_widget: Element<'a, Message> = if is_menu_open {
+        popover(menu_button)
+            .popup(menu_content)
+            .position(popover::Position::Bottom)
+            .on_close(on_message(BrowserMsg::CloseMenu))
+            .into()
+    } else {
+        menu_button.into()
+    };
+
+    // Header row with name, chevron, and menu button
     let header = widget::row::with_capacity(4)
         .push(icon::from_name("folder-symbolic").size(16))
         .push(
@@ -918,18 +1047,7 @@ fn render_collection_card<'a, Message: Clone + 'static>(
                 .class(cosmic::style::Text::Default),
         )
         .push(icon::from_name("go-next-symbolic").size(12))
-        .push(
-            widget::button::icon(icon::from_name("user-trash-symbolic"))
-                .class(cosmic::theme::Button::Destructive)
-                .padding(4)
-                .on_press(on_message(BrowserMsg::RequestDeleteCollection {
-                    server_index,
-                    tenant,
-                    database,
-                    collection_id,
-                    collection_name,
-                })),
-        )
+        .push(menu_widget)
         .align_y(Alignment::Center)
         .spacing(8);
 
@@ -960,18 +1078,61 @@ fn render_collection_card<'a, Message: Clone + 'static>(
         .into()
 }
 
-/// Renders a database as a card with delete action.
+/// Renders a database as a card with kebab menu for actions.
 fn render_database_card<'a, Message: Clone + 'static>(
     name: &str,
     is_selected: bool,
     server_index: usize,
     tenant: String,
+    open_menu: &Option<MenuItemId>,
     on_message: impl Fn(BrowserMsg) -> Message + Copy + 'a,
 ) -> Element<'a, Message> {
     let db_name = name.to_string();
     let db_name_display = db_name.clone();
+    let db_name_for_delete = db_name.clone();
 
-    // Header row with name and delete button
+    // Create menu item ID for this database
+    let menu_id = MenuItemId::Database {
+        server_index,
+        tenant: tenant.clone(),
+        name: db_name,
+    };
+    let is_menu_open = open_menu.as_ref() == Some(&menu_id);
+
+    // Kebab menu button
+    let menu_button = widget::button::icon(icon::from_name("view-more-symbolic"))
+        .class(cosmic::theme::Button::Icon)
+        .padding(4)
+        .on_press(on_message(BrowserMsg::ToggleMenu(menu_id.clone())));
+
+    // Popover content (delete menu)
+    let delete_msg = on_message(BrowserMsg::RequestDeleteDatabase {
+        server_index,
+        tenant: tenant.clone(),
+        name: db_name_for_delete,
+    });
+    let menu_content: Element<'a, Message> = widget::container(
+        widget::button::destructive("Delete")
+            .on_press(delete_msg)
+            .width(Length::Fill),
+    )
+    .padding(4)
+    .width(Length::Fixed(120.0))
+    .class(cosmic::style::Container::Card)
+    .into();
+
+    // Wrap menu button in popover if menu is open
+    let menu_widget: Element<'a, Message> = if is_menu_open {
+        popover(menu_button)
+            .popup(menu_content)
+            .position(popover::Position::Bottom)
+            .on_close(on_message(BrowserMsg::CloseMenu))
+            .into()
+    } else {
+        menu_button.into()
+    };
+
+    // Header row with name, chevron, and menu button
     let header = widget::row::with_capacity(4)
         .push(icon::from_name("drive-harddisk-symbolic").size(16))
         .push(
@@ -980,16 +1141,7 @@ fn render_database_card<'a, Message: Clone + 'static>(
                 .class(cosmic::style::Text::Default),
         )
         .push(icon::from_name("go-next-symbolic").size(12))
-        .push(
-            widget::button::icon(icon::from_name("user-trash-symbolic"))
-                .class(cosmic::theme::Button::Destructive)
-                .padding(4)
-                .on_press(on_message(BrowserMsg::RequestDeleteDatabase {
-                    server_index,
-                    tenant,
-                    name: db_name,
-                })),
-        )
+        .push(menu_widget)
         .align_y(Alignment::Center)
         .spacing(8);
 
