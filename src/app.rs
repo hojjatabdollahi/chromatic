@@ -1314,6 +1314,11 @@ impl AppModel {
                         // Update selection in miller state using full path
                         self.browser.miller.select(path);
 
+                        // Clear document preview when selecting non-document items
+                        if !matches!(&item.data, BrowserData::Document { .. }) {
+                            self.browser.selected_document = None;
+                        }
+
                         // If it's a branch item, we need to load children
                         match &item.data {
                             BrowserData::Server { index, config } => {
