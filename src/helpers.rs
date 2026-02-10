@@ -132,3 +132,43 @@ pub async fn fetch_document_count(
     let client = create_client(url, token, auth_header_type).await?;
     client.count_documents(collection_id, tenant, database).await.map_err(|e| e.to_string())
 }
+
+/// Create a new collection
+pub async fn create_collection(
+    url: &str,
+    token: &str,
+    auth_header_type: &str,
+    name: &str,
+    tenant: &str,
+    database: &str,
+) -> Result<Collection, String> {
+    let client = create_client(url, token, auth_header_type).await?;
+    client.create_collection(name, tenant, database).await.map_err(|e| e.to_string())
+}
+
+/// Delete a collection by name
+pub async fn delete_collection(
+    url: &str,
+    token: &str,
+    auth_header_type: &str,
+    collection_name: &str,
+    tenant: &str,
+    database: &str,
+) -> Result<(), String> {
+    let client = create_client(url, token, auth_header_type).await?;
+    client.delete_collection(collection_name, tenant, database).await.map_err(|e| e.to_string())
+}
+
+/// Delete a single document from a collection
+pub async fn delete_document(
+    url: &str,
+    token: &str,
+    auth_header_type: &str,
+    collection_id: &str,
+    document_id: &str,
+    tenant: &str,
+    database: &str,
+) -> Result<(), String> {
+    let client = create_client(url, token, auth_header_type).await?;
+    client.delete_documents(collection_id, vec![document_id.to_string()], tenant, database).await.map_err(|e| e.to_string())
+}

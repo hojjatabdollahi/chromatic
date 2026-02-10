@@ -2,7 +2,6 @@
 
 //! Documents page view for the Chromatic application.
 
-use crate::api::Document;
 use crate::app::{AppModel, ConnectionStatus, Message};
 use crate::fl;
 use cosmic::iced::alignment::{Horizontal, Vertical};
@@ -10,7 +9,7 @@ use cosmic::iced::{Alignment, Length};
 use cosmic::prelude::*;
 use cosmic::widget::{self, icon};
 
-use super::widgets::connection_status_badge;
+use super::widgets::{connection_status_badge, document_card};
 
 /// View for the Documents page (when a collection is selected)
 pub fn view(app: &AppModel, space_s: u16, space_m: u16) -> Element<'_, Message> {
@@ -131,75 +130,37 @@ pub fn view(app: &AppModel, space_s: u16, space_m: u16) -> Element<'_, Message> 
             .into()
     };
 
-    widget::column::with_capacity(3)
+    // Build the main page content
+    let main_content = widget::column::with_capacity(3)
         .push(header)
         .push(toolbar)
         .push(content)
         .spacing(space_m)
         .width(Length::Fill)
-        .height(Length::Fill)
-        .into()
-}
+        .height(Length::Fill);
 
-/// Custom document card widget with better layout
-fn document_card(doc: &Document, space_s: u16) -> Element<'_, Message> {
-    let doc_content = doc.document.as_deref().unwrap_or("[No content]");
+    // Check for delete confirmation dialog
+    if let Some(ref document) = app.delete_document_target {
+        let dialog: Element<'_, Message> = widget::dialog()
+            .title(fl!("delete-document"))
+            .body(format!(
+                "{}: '{}'",
+                fl!("confirm-delete-document"),
+                document.id
+            ))
+            .primary_action(
+                widget::button::destructive(fl!("delete")).on_press(Message::ConfirmDeleteDocument),
+            )
+            .secondary_action(
+                widget::button::standard(fl!("cancel")).on_press(Message::CancelDeleteDocument),
+            )
+            .into();
 
-    // Create a preview with better truncation
-    let preview = if doc_content.len() > 300 {
-        format!("{}...", &doc_content[..300])
-    } else {
-        doc_content.to_string()
-    };
-
-    // Build metadata display
-    let metadata_items: Vec<Element<'_, Message>> = doc
-        .metadata
-        .as_ref()
-        .map(|m| {
-            m.iter()
-                .take(5) // Limit to 5 metadata items
-                .map(|(k, v)| {
-                    widget::row::with_capacity(2)
-                        .push(
-                            widget::container(widget::text::caption(format!("{}:", k)))
-                                .width(Length::Fixed(100.0)),
-                        )
-                        .push(widget::text::caption(v.to_string()))
-                        .spacing(4)
-                        .into()
-                })
-                .collect()
-        })
-        .unwrap_or_default();
-
-    let mut card_content = widget::column::with_capacity(3 + metadata_items.len()).spacing(space_s);
-
-    // Document ID header with a badge-like style
-    let id_badge = widget::container(widget::text::caption(&doc.id))
-        .padding([2, 8])
-        .class(cosmic::style::Container::Primary);
-
-    card_content = card_content.push(id_badge);
-
-    // Document content preview
-    card_content =
-        card_content.push(widget::container(widget::text::body(preview)).padding([4, 0]));
-
-    // Metadata section
-    if !metadata_items.is_empty() {
-        let metadata_section =
-            widget::container(widget::column::with_children(metadata_items).spacing(2))
-                .padding([space_s, 0, 0, 0]);
-
-        card_content = card_content
-            .push(widget::text::caption(fl!("metadata")).class(cosmic::style::Text::Accent));
-        card_content = card_content.push(metadata_section);
+        return widget::popover(main_content)
+            .modal(true)
+            .popup(dialog)
+            .into();
     }
 
-    widget::container(card_content)
-        .padding(space_s)
-        .width(Length::Fill)
-        .class(cosmic::style::Container::Card)
-        .into()
+    main_content.into()
 }

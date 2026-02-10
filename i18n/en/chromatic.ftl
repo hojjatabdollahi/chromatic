@@ -17,6 +17,13 @@ no-collections = No collections found.
 disconnected = Disconnected
 connected = Connected
 error = Error
+new-collection = New Collection
+collection-name = Collection Name
+collection-name-placeholder = my_collection
+collection-created = Collection created
+collection-deleted = Collection deleted
+delete-collection = Delete Collection
+confirm-delete-collection = Are you sure you want to delete this collection?
 
 # Settings page
 servers = Servers
@@ -44,6 +51,8 @@ delete-server = Delete Server
 delete-server-description = Remove this server configuration
 delete = Delete
 save = Save
+cancel = Cancel
+create = Create
 validating = Validating...
 validating-tenant-db = Validating tenant and database...
 settings-saved = Settings saved
@@ -81,6 +90,13 @@ loading-documents = Loading documents...
 no-documents = No documents in this collection.
 no-more-documents = No more documents on this page.
 metadata = Metadata
+document-details = Document Details
+document-id = Document ID
+document-content = Content
+document-deleted = Document deleted
+delete-document = Delete Document
+confirm-delete-document = Are you sure you want to delete this document?
+no-document-selected = No document selected
 
 # Pagination
 page = Page

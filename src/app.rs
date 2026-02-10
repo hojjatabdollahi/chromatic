@@ -82,6 +82,18 @@ pub struct AppModel {
     pub notifications: Vec<Notification>,
     /// Counter for generating unique notification IDs
     pub notification_id_counter: u32,
+    
+    // === Dialog state ===
+    /// Document being viewed in context drawer
+    pub selected_document: Option<Document>,
+    /// Collection pending deletion (for confirmation dialog)
+    pub delete_collection_target: Option<Collection>,
+    /// Document pending deletion (for confirmation dialog)
+    pub delete_document_target: Option<Document>,
+    /// New collection name input
+    pub new_collection_name: String,
+    /// Whether the new collection dialog is open
+    pub show_new_collection_dialog: bool,
 }
 
 /// What's missing during validation
@@ -200,6 +212,29 @@ pub enum Message {
     AddNotification(NotificationLevel, String, String),
     DismissNotification(u32),
     CopyNotification(u32),
+    
+    // Document details
+    ShowDocumentDetails(Document),
+    CloseDocumentDetails,
+    
+    // Collection management
+    OpenNewCollectionDialog,
+    CloseNewCollectionDialog,
+    NewCollectionNameChanged(String),
+    CreateCollection,
+    CreateCollectionResult(Result<Collection, String>),
+    
+    // Delete collection
+    RequestDeleteCollection(Collection),
+    ConfirmDeleteCollection,
+    CancelDeleteCollection,
+    DeleteCollectionResult(Result<(), String>),
+    
+    // Delete document
+    RequestDeleteDocument(Document),
+    ConfirmDeleteDocument,
+    CancelDeleteDocument,
+    DeleteDocumentResult(Result<(), String>),
 }
 
 /// Create a COSMIC application from the app model
@@ -305,6 +340,11 @@ impl cosmic::Application for AppModel {
             documents_total: None,
             notifications: Vec::new(),
             notification_id_counter: 0,
+            selected_document: None,
+            delete_collection_target: None,
+            delete_document_target: None,
+            new_collection_name: String::new(),
+            show_new_collection_dialog: false,
         };
 
         // Create a startup command that sets the window title.
@@ -337,12 +377,19 @@ impl cosmic::Application for AppModel {
             return None;
         }
 
-        Some(match self.context_page {
+        Some(match &self.context_page {
             ContextPage::About => context_drawer::about(
                 &self.about,
                 |url| Message::LaunchUrl(url.to_string()),
-                Message::ToggleContextPage(ContextPage::About),
+                Message::ToggleContextPage(ContextPage::About.clone()),
             ),
+            ContextPage::DocumentDetails => {
+                let content = pages::widgets::document_details_view(
+                    self.selected_document.as_ref(),
+                );
+                context_drawer::context_drawer(content, Message::CloseDocumentDetails)
+                    .title(fl!("document-details"))
+            }
         })
     }
 
@@ -933,6 +980,188 @@ impl cosmic::Application for AppModel {
                     });
                 }
             }
+
+            // Document details
+            Message::ShowDocumentDetails(document) => {
+                self.selected_document = Some(document);
+                self.context_page = ContextPage::DocumentDetails;
+                self.core.window.show_context = true;
+            }
+
+            Message::CloseDocumentDetails => {
+                self.selected_document = None;
+                self.core.window.show_context = false;
+            }
+
+            // Collection management
+            Message::OpenNewCollectionDialog => {
+                self.new_collection_name = String::new();
+                self.show_new_collection_dialog = true;
+            }
+
+            Message::CloseNewCollectionDialog => {
+                self.show_new_collection_dialog = false;
+                self.new_collection_name = String::new();
+            }
+
+            Message::NewCollectionNameChanged(name) => {
+                self.new_collection_name = name;
+            }
+
+            Message::CreateCollection => {
+                if self.new_collection_name.is_empty() {
+                    return Task::none();
+                }
+                let active = self.config.active_config();
+                let url = active.server_url.clone();
+                let token = active.auth_token.clone();
+                let auth_header_type = active.auth_header_type.clone();
+                let tenant = active.tenant.clone();
+                let database = active.database.clone();
+                let name = self.new_collection_name.clone();
+                
+                return cosmic::task::future(async move {
+                    let result = helpers::create_collection(&url, &token, &auth_header_type, &name, &tenant, &database).await;
+                    cosmic::Action::App(Message::CreateCollectionResult(result))
+                });
+            }
+
+            Message::CreateCollectionResult(result) => {
+                self.show_new_collection_dialog = false;
+                self.new_collection_name = String::new();
+                match result {
+                    Ok(collection) => {
+                        // Add success notification inline
+                        self.notification_id_counter += 1;
+                        self.notifications.push(Notification {
+                            id: self.notification_id_counter,
+                            level: NotificationLevel::Success,
+                            title: fl!("collection-created"),
+                            message: format!("Collection '{}' created", collection.name),
+                        });
+                        // Refresh collections list
+                        return self.update(Message::FetchCollections);
+                    }
+                    Err(e) => {
+                        return self.update(Message::AddNotification(
+                            NotificationLevel::Error,
+                            fl!("error"),
+                            e,
+                        ));
+                    }
+                }
+            }
+
+            // Delete collection
+            Message::RequestDeleteCollection(collection) => {
+                self.delete_collection_target = Some(collection);
+            }
+
+            Message::ConfirmDeleteCollection => {
+                if let Some(ref collection) = self.delete_collection_target {
+                    let active = self.config.active_config();
+                    let url = active.server_url.clone();
+                    let token = active.auth_token.clone();
+                    let auth_header_type = active.auth_header_type.clone();
+                    let tenant = active.tenant.clone();
+                    let database = active.database.clone();
+                    let collection_name = collection.name.clone();
+                    
+                    return cosmic::task::future(async move {
+                        let result = helpers::delete_collection(&url, &token, &auth_header_type, &collection_name, &tenant, &database).await;
+                        cosmic::Action::App(Message::DeleteCollectionResult(result))
+                    });
+                }
+            }
+
+            Message::CancelDeleteCollection => {
+                self.delete_collection_target = None;
+            }
+
+            Message::DeleteCollectionResult(result) => {
+                let deleted_name = self.delete_collection_target.as_ref().map(|c| c.name.clone());
+                self.delete_collection_target = None;
+                match result {
+                    Ok(()) => {
+                        if let Some(name) = deleted_name {
+                            // Add success notification inline
+                            self.notification_id_counter += 1;
+                            self.notifications.push(Notification {
+                                id: self.notification_id_counter,
+                                level: NotificationLevel::Success,
+                                title: fl!("collection-deleted"),
+                                message: format!("Collection '{}' deleted", name),
+                            });
+                        }
+                        // Refresh collections list
+                        return self.update(Message::FetchCollections);
+                    }
+                    Err(e) => {
+                        return self.update(Message::AddNotification(
+                            NotificationLevel::Error,
+                            fl!("error"),
+                            e,
+                        ));
+                    }
+                }
+            }
+
+            // Delete document
+            Message::RequestDeleteDocument(document) => {
+                self.delete_document_target = Some(document);
+            }
+
+            Message::ConfirmDeleteDocument => {
+                if let Some(ref document) = self.delete_document_target {
+                    if let Some(ref collection) = self.selected_collection {
+                        let active = self.config.active_config();
+                        let url = active.server_url.clone();
+                        let token = active.auth_token.clone();
+                        let auth_header_type = active.auth_header_type.clone();
+                        let tenant = active.tenant.clone();
+                        let database = active.database.clone();
+                        let collection_id = collection.id.clone();
+                        let document_id = document.id.clone();
+                        
+                        return cosmic::task::future(async move {
+                            let result = helpers::delete_document(&url, &token, &auth_header_type, &collection_id, &document_id, &tenant, &database).await;
+                            cosmic::Action::App(Message::DeleteDocumentResult(result))
+                        });
+                    }
+                }
+            }
+
+            Message::CancelDeleteDocument => {
+                self.delete_document_target = None;
+            }
+
+            Message::DeleteDocumentResult(result) => {
+                let deleted_id = self.delete_document_target.as_ref().map(|d| d.id.clone());
+                self.delete_document_target = None;
+                match result {
+                    Ok(()) => {
+                        if let Some(id) = deleted_id {
+                            // Add success notification inline
+                            self.notification_id_counter += 1;
+                            self.notifications.push(Notification {
+                                id: self.notification_id_counter,
+                                level: NotificationLevel::Success,
+                                title: fl!("document-deleted"),
+                                message: format!("Document '{}' deleted", id),
+                            });
+                        }
+                        // Refresh documents list
+                        return self.update(Message::FetchDocuments);
+                    }
+                    Err(e) => {
+                        return self.update(Message::AddNotification(
+                            NotificationLevel::Error,
+                            fl!("error"),
+                            e,
+                        ));
+                    }
+                }
+            }
         }
         Task::none()
     }
@@ -972,10 +1201,11 @@ pub enum Page {
 }
 
 /// The context page to display in the context drawer.
-#[derive(Copy, Clone, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub enum ContextPage {
     #[default]
     About,
+    DocumentDetails,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

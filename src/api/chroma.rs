@@ -589,4 +589,129 @@ impl ChromaClient {
         
         Ok(count)
     }
+
+    /// Create a new collection
+    pub async fn create_collection(
+        &self,
+        name: &str,
+        tenant: &str,
+        database: &str,
+    ) -> Result<Collection, ChromaError> {
+        let url = match self.api_version {
+            ApiVersion::V1 => format!(
+                "{}/databases/{}/collections?tenant={}",
+                self.api_prefix(), database, tenant
+            ),
+            ApiVersion::V2 => format!(
+                "{}/tenants/{}/databases/{}/collections",
+                self.api_prefix(), tenant, database
+            ),
+        };
+
+        let body = serde_json::json!({
+            "name": name
+        });
+
+        let response = self
+            .client
+            .post(&url)
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| ChromaError::ConnectionFailed(e.to_string()))?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let body = response.text().await.unwrap_or_default();
+            return Err(ChromaError::RequestFailed(format!(
+                "Failed to create collection '{}': {} - {}",
+                name, status, body
+            )));
+        }
+
+        response
+            .json::<Collection>()
+            .await
+            .map_err(|e| ChromaError::InvalidResponse(e.to_string()))
+    }
+
+    /// Delete a collection by name
+    pub async fn delete_collection(
+        &self,
+        collection_name: &str,
+        tenant: &str,
+        database: &str,
+    ) -> Result<(), ChromaError> {
+        let url = match self.api_version {
+            ApiVersion::V1 => format!(
+                "{}/databases/{}/collections/{}?tenant={}",
+                self.api_prefix(), database, collection_name, tenant
+            ),
+            ApiVersion::V2 => format!(
+                "{}/tenants/{}/databases/{}/collections/{}",
+                self.api_prefix(), tenant, database, collection_name
+            ),
+        };
+
+        let response = self
+            .client
+            .delete(&url)
+            .send()
+            .await
+            .map_err(|e| ChromaError::ConnectionFailed(e.to_string()))?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let body = response.text().await.unwrap_or_default();
+            return Err(ChromaError::RequestFailed(format!(
+                "Failed to delete collection '{}': {} - {}",
+                collection_name, status, body
+            )));
+        }
+
+        Ok(())
+    }
+
+    /// Delete documents from a collection by IDs
+    pub async fn delete_documents(
+        &self,
+        collection_id: &str,
+        document_ids: Vec<String>,
+        tenant: &str,
+        database: &str,
+    ) -> Result<(), ChromaError> {
+        let url = match self.api_version {
+            ApiVersion::V1 => format!(
+                "{}/databases/{}/collections/{}/delete?tenant={}",
+                self.api_prefix(), database, collection_id, tenant
+            ),
+            ApiVersion::V2 => format!(
+                "{}/tenants/{}/databases/{}/collections/{}/delete",
+                self.api_prefix(), tenant, database, collection_id
+            ),
+        };
+
+        let body = serde_json::json!({
+            "ids": document_ids
+        });
+
+        let response = self
+            .client
+            .post(&url)
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| ChromaError::ConnectionFailed(e.to_string()))?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let body = response.text().await.unwrap_or_default();
+            return Err(ChromaError::RequestFailed(format!(
+                "Failed to delete documents: {} - {}",
+                status, body
+            )));
+        }
+
+        Ok(())
+    }
 }

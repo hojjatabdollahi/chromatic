@@ -9,7 +9,7 @@ use cosmic::iced::{Alignment, Length};
 use cosmic::prelude::*;
 use cosmic::widget::{self, icon};
 
-use super::widgets::connection_status_badge;
+use super::widgets::{collection_card, connection_status_badge};
 
 /// View for the Collections page
 pub fn view(app: &AppModel, space_s: u16, space_m: u16) -> Element<'_, Message> {
@@ -22,8 +22,12 @@ pub fn view(app: &AppModel, space_s: u16, space_m: u16) -> Element<'_, Message> 
     let refresh_button =
         widget::button::standard(fl!("refresh")).on_press(Message::FetchCollections);
 
-    let toolbar = widget::row::with_capacity(1)
+    let new_collection_button =
+        widget::button::suggested(fl!("new-collection")).on_press(Message::OpenNewCollectionDialog);
+
+    let toolbar = widget::row::with_capacity(2)
         .push(refresh_button)
+        .push(new_collection_button)
         .spacing(space_s);
 
     let content: Element<'_, Message> = if app.collections.is_empty() {
@@ -51,21 +55,7 @@ pub fn view(app: &AppModel, space_s: u16, space_m: u16) -> Element<'_, Message> 
         let mut list_column = widget::column::with_capacity(page_items.len());
 
         for collection in page_items {
-            let collection_clone = collection.clone();
-            let item = widget::mouse_area(
-                widget::container(
-                    widget::column::with_capacity(2)
-                        .push(widget::text::title4(&collection.name))
-                        .push(widget::text::caption(format!("ID: {}", collection.id)))
-                        .spacing(4),
-                )
-                .padding(space_s)
-                .width(Length::Fill)
-                .class(cosmic::style::Container::Card),
-            )
-            .on_press(Message::SelectCollection(collection_clone));
-
-            list_column = list_column.push(item);
+            list_column = list_column.push(collection_card(collection, space_s));
         }
 
         // Pagination controls
@@ -122,12 +112,72 @@ pub fn view(app: &AppModel, space_s: u16, space_m: u16) -> Element<'_, Message> 
             .into()
     };
 
-    widget::column::with_capacity(3)
+    // Build the main page content
+    let main_content = widget::column::with_capacity(4)
         .push(header)
         .push(toolbar)
         .push(content)
         .spacing(space_m)
         .width(Length::Fill)
-        .height(Length::Fill)
-        .into()
+        .height(Length::Fill);
+
+    // Check for dialogs - show dialog as modal overlay
+    if app.show_new_collection_dialog {
+        let dialog: Element<'_, Message> = widget::dialog()
+            .title(fl!("new-collection"))
+            .control(
+                widget::column::with_capacity(2)
+                    .push(widget::text::body(fl!("collection-name")))
+                    .push(
+                        widget::text_input(
+                            fl!("collection-name-placeholder"),
+                            &app.new_collection_name,
+                        )
+                        .on_input(Message::NewCollectionNameChanged)
+                        .width(Length::Fill),
+                    )
+                    .spacing(4),
+            )
+            .primary_action(widget::button::suggested(fl!("create")).on_press_maybe(
+                if !app.new_collection_name.is_empty() {
+                    Some(Message::CreateCollection)
+                } else {
+                    None
+                },
+            ))
+            .secondary_action(
+                widget::button::standard(fl!("cancel")).on_press(Message::CloseNewCollectionDialog),
+            )
+            .into();
+
+        return widget::popover(main_content)
+            .modal(true)
+            .popup(dialog)
+            .into();
+    }
+
+    if let Some(ref collection) = app.delete_collection_target {
+        let dialog: Element<'_, Message> = widget::dialog()
+            .title(fl!("delete-collection"))
+            .body(format!(
+                "{}: '{}'",
+                fl!("confirm-delete-collection"),
+                collection.name
+            ))
+            .primary_action(
+                widget::button::destructive(fl!("delete"))
+                    .on_press(Message::ConfirmDeleteCollection),
+            )
+            .secondary_action(
+                widget::button::standard(fl!("cancel")).on_press(Message::CancelDeleteCollection),
+            )
+            .into();
+
+        return widget::popover(main_content)
+            .modal(true)
+            .popup(dialog)
+            .into();
+    }
+
+    main_content.into()
 }
