@@ -89,8 +89,6 @@ pub struct AppModel {
 pub struct ValidationMissing {
     pub tenant_exists: bool,
     pub database_exists: bool,
-    pub tenant_name: String,
-    pub database_name: String,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -99,6 +97,7 @@ pub enum SettingsStatus {
     Idle,
     Validating,
     Saved,
+    #[allow(dead_code)]
     Error(String),
     /// Tenant and/or database don't exist - offer to create them
     MissingResources(ValidationMissing),
@@ -118,6 +117,7 @@ pub enum ConnectionStatus {
 /// Notification level/type
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum NotificationLevel {
+    #[allow(dead_code)]
     Info,
     Success,
     Warning,
@@ -542,8 +542,20 @@ impl cosmic::Application for AppModel {
                     if let Err(e) = self.config.write_entry(context) {
                         eprintln!("Failed to save config: {}", e);
                         self.settings_status = SettingsStatus::Error(format!("Failed to save: {}", e));
+                        // Add error notification
+                        return self.update(Message::AddNotification(
+                            NotificationLevel::Error,
+                            fl!("error"),
+                            format!("Failed to save: {}", e),
+                        ));
                     } else {
                         self.settings_status = SettingsStatus::Saved;
+                        // Add success notification
+                        return self.update(Message::AddNotification(
+                            NotificationLevel::Success,
+                            fl!("settings-saved"),
+                            String::new(),
+                        ));
                     }
                 }
             }
@@ -569,13 +581,28 @@ impl cosmic::Application for AppModel {
                         return self.update(Message::SaveSettings);
                     }
                     Err((tenant_exists, database_exists)) => {
+                        // Build missing resources message
+                        let mut missing_parts = Vec::new();
+                        if !tenant_exists {
+                            missing_parts.push(format!("{} '{}'", fl!("tenant"), self.tenant_input));
+                        }
+                        if !database_exists {
+                            missing_parts.push(format!("{} '{}'", fl!("database"), self.database_input));
+                        }
+                        let missing_msg = format!("{}: {}", fl!("missing-resources"), missing_parts.join(", "));
+                        
                         // Show what's missing and offer to create
                         self.settings_status = SettingsStatus::MissingResources(ValidationMissing {
                             tenant_exists,
                             database_exists,
-                            tenant_name: self.tenant_input.clone(),
-                            database_name: self.database_input.clone(),
                         });
+                        
+                        // Add warning notification
+                        return self.update(Message::AddNotification(
+                            NotificationLevel::Warning,
+                            fl!("missing-resources"),
+                            missing_msg,
+                        ));
                     }
                 }
             }
@@ -610,7 +637,14 @@ impl cosmic::Application for AppModel {
                         return self.update(Message::SaveSettings);
                     }
                     Err(e) => {
-                        self.settings_status = SettingsStatus::Error(format!("Failed to create resources: {}", e));
+                        let error_msg = format!("Failed to create resources: {}", e);
+                        self.settings_status = SettingsStatus::Error(error_msg.clone());
+                        // Add error notification
+                        return self.update(Message::AddNotification(
+                            NotificationLevel::Error,
+                            fl!("error"),
+                            error_msg,
+                        ));
                     }
                 }
             }
@@ -692,9 +726,21 @@ impl cosmic::Application for AppModel {
                 match result {
                     Ok(()) => {
                         self.connection_status = ConnectionStatus::Connected;
+                        // Add success notification
+                        return self.update(Message::AddNotification(
+                            NotificationLevel::Success,
+                            fl!("status-connected"),
+                            String::new(),
+                        ));
                     }
                     Err(e) => {
-                        self.connection_status = ConnectionStatus::Error(e);
+                        self.connection_status = ConnectionStatus::Error(e.clone());
+                        // Add error notification
+                        return self.update(Message::AddNotification(
+                            NotificationLevel::Error,
+                            fl!("status-error"),
+                            e,
+                        ));
                     }
                 }
             }

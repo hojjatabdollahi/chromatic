@@ -4,7 +4,6 @@
 
 use crate::app::{ConnectionStatus, Message, Notification, NotificationLevel};
 use crate::fl;
-use cosmic::iced::alignment::{Horizontal, Vertical};
 use cosmic::iced::{Alignment, Length};
 use cosmic::prelude::*;
 use cosmic::widget::{self, icon};
@@ -92,30 +91,4 @@ pub fn notification_toast(notification: &Notification) -> Element<'_, Message> {
         .width(Length::Fixed(400.0))
         .class(container_style)
         .into()
-}
-
-/// Notifications overlay - renders all active notifications
-pub fn notifications_overlay<'a>(
-    notifications: &'a [Notification],
-) -> Option<Element<'a, Message>> {
-    if notifications.is_empty() {
-        return None;
-    }
-
-    let mut column = widget::column::with_capacity(notifications.len()).spacing(8);
-
-    for notification in notifications {
-        column = column.push(notification_toast(notification));
-    }
-
-    // Position in top-right corner
-    Some(
-        widget::container(column)
-            .width(Length::Fill)
-            .height(Length::Fill)
-            .align_x(Horizontal::Right)
-            .align_y(Vertical::Top)
-            .padding([50, 20, 20, 20])
-            .into(),
-    )
 }

@@ -319,6 +319,7 @@ impl ChromaClient {
     }
 
     /// Validate that both tenant and database exist
+    #[allow(dead_code)]
     pub async fn validate_tenant_database(&self, tenant: &str, database: &str) -> Result<(), ChromaError> {
         self.get_tenant(tenant).await?;
         self.get_database(tenant, database).await?;

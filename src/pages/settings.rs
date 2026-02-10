@@ -2,7 +2,7 @@
 
 //! Settings page view for the Chromatic application.
 
-use crate::app::{AppModel, ConnectionStatus, Message, SettingsStatus};
+use crate::app::{AppModel, Message, SettingsStatus};
 use crate::fl;
 use cosmic::iced::{Alignment, Length};
 use cosmic::prelude::*;
@@ -217,32 +217,14 @@ pub fn view(app: &AppModel, space_s: u16, space_m: u16) -> Element<'_, Message> 
         );
     }
 
-    // Connection status
-    let connection_status_text = match &app.connection_status {
-        ConnectionStatus::Disconnected => fl!("status-disconnected"),
-        ConnectionStatus::Connecting => fl!("status-connecting"),
-        ConnectionStatus::Connected => fl!("status-connected"),
-        ConnectionStatus::Error(e) => format!("{}: {}", fl!("status-error"), e),
-    };
-
-    // Settings save status
-    let (save_button_label, save_status_text, show_create_button) = match &app.settings_status {
-        SettingsStatus::Idle => (fl!("save"), String::new(), false),
-        SettingsStatus::Validating => (fl!("validating"), fl!("validating-tenant-db"), false),
-        SettingsStatus::Saved => (fl!("save"), fl!("settings-saved"), false),
-        SettingsStatus::Error(e) => (fl!("save"), e.clone(), false),
-        SettingsStatus::MissingResources(missing) => {
-            let mut missing_parts = Vec::new();
-            if !missing.tenant_exists {
-                missing_parts.push(format!("{} '{}'", fl!("tenant"), missing.tenant_name));
-            }
-            if !missing.database_exists {
-                missing_parts.push(format!("{} '{}'", fl!("database"), missing.database_name));
-            }
-            let msg = format!("{}: {}", fl!("missing-resources"), missing_parts.join(", "));
-            (fl!("save"), msg, true)
+    // Settings save status - only need button labels and create button logic
+    let (save_button_label, show_create_button) = match &app.settings_status {
+        SettingsStatus::Idle | SettingsStatus::Saved | SettingsStatus::Error(_) => {
+            (fl!("save"), false)
         }
-        SettingsStatus::Creating => (fl!("creating"), fl!("creating-resources"), false),
+        SettingsStatus::Validating => (fl!("validating"), false),
+        SettingsStatus::MissingResources(_) => (fl!("save"), true),
+        SettingsStatus::Creating => (fl!("creating"), false),
     };
 
     let save_button = if matches!(
@@ -254,10 +236,9 @@ pub fn view(app: &AppModel, space_s: u16, space_m: u16) -> Element<'_, Message> 
         widget::button::standard(save_button_label).on_press(Message::ValidateAndSaveSettings)
     };
 
-    let mut buttons = widget::row::with_capacity(5)
+    let mut buttons = widget::row::with_capacity(3)
         .push(save_button)
         .push(widget::button::suggested(fl!("test-connection")).on_press(Message::TestConnection))
-        .push(widget::text::body(connection_status_text))
         .spacing(space_s)
         .align_y(Alignment::Center);
 
@@ -266,20 +247,6 @@ pub fn view(app: &AppModel, space_s: u16, space_m: u16) -> Element<'_, Message> 
         buttons = buttons.push(
             widget::button::suggested(fl!("create-missing"))
                 .on_press(Message::CreateMissingResources),
-        );
-    }
-
-    // Show save status if there's one
-    if !save_status_text.is_empty() {
-        let status_style = match &app.settings_status {
-            SettingsStatus::Saved => cosmic::theme::Button::Suggested,
-            SettingsStatus::Error(_) | SettingsStatus::MissingResources(_) => {
-                cosmic::theme::Button::Destructive
-            }
-            _ => cosmic::theme::Button::Standard,
-        };
-        buttons = buttons.push(
-            widget::button::custom(widget::text::caption(save_status_text)).class(status_style),
         );
     }
 
