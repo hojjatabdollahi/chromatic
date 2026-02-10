@@ -487,11 +487,17 @@ impl cosmic::Application for AppModel {
     fn update(&mut self, message: Self::Message) -> Task<cosmic::Action<Self::Message>> {
         match message {
             Message::ToggleContextPage(context_page) => {
+                let was_open = self.core.window.show_context;
                 if self.context_page == context_page {
                     self.core.window.show_context = !self.core.window.show_context;
                 } else {
                     self.context_page = context_page;
                     self.core.window.show_context = true;
+                }
+                // Maintain scroll position on Browser page when drawer state changes
+                let is_browser = self.nav.active_data::<Page>() == Some(&Page::Browser);
+                if is_browser && (was_open != self.core.window.show_context) {
+                    return self.browser.scroll_to_end();
                 }
             }
 
@@ -1095,6 +1101,8 @@ impl cosmic::Application for AppModel {
             Message::CloseDocumentDetails => {
                 self.selected_document = None;
                 self.core.window.show_context = false;
+                // Maintain scroll position when closing document preview
+                return self.browser.scroll_to_end();
             }
 
             // Collection management
@@ -1476,6 +1484,8 @@ impl AppModel {
                                 self.selected_document = Some(document.clone());
                                 self.context_page = ContextPage::DocumentDetails;
                                 self.core.window.show_context = true;
+                                // Maintain scroll position after drawer opens
+                                return self.browser.scroll_to_end();
                             }
                             _ => {}
                         }
@@ -1520,6 +1530,8 @@ impl AppModel {
                                 self.selected_document = Some(document.clone());
                                 self.context_page = ContextPage::DocumentDetails;
                                 self.core.window.show_context = true;
+                                // Maintain scroll position after drawer opens
+                                return self.browser.scroll_to_end();
                             }
                             _ => {}
                         }
