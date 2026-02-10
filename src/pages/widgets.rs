@@ -107,10 +107,13 @@ pub fn document_details_view(document: Option<&Document>) -> Element<'_, Message
     // Document ID section
     content = content.push(widget::text::title4(fl!("document-id")));
     content = content.push(
-        widget::container(widget::text::body(doc.id.clone()))
-            .padding(space_s)
-            .width(Length::Fill)
-            .class(cosmic::style::Container::Card),
+        widget::container(
+            widget::text::body(doc.id.clone())
+                .wrapping(cosmic::iced_core::text::Wrapping::WordOrGlyph),
+        )
+        .padding(space_s)
+        .width(Length::Fill)
+        .class(cosmic::style::Container::Card),
     );
 
     // Document content section
@@ -120,12 +123,10 @@ pub fn document_details_view(document: Option<&Document>) -> Element<'_, Message
         .clone()
         .unwrap_or_else(|| "[No content]".to_string());
     content = content.push(
-        widget::container(
-            widget::scrollable(widget::text::body(doc_content)).height(Length::Fixed(200.0)),
-        )
-        .padding(space_s)
-        .width(Length::Fill)
-        .class(cosmic::style::Container::Card),
+        widget::container(widget::text::body(doc_content))
+            .padding(space_s)
+            .width(Length::Fill)
+            .class(cosmic::style::Container::Card),
     );
 
     // Metadata section
@@ -151,10 +152,8 @@ pub fn document_details_view(document: Option<&Document>) -> Element<'_, Message
         }
     }
 
-    widget::scrollable(content)
-        .width(Length::Fill)
-        .height(Length::Fill)
-        .into()
+    // Return the column directly - context drawer handles scrolling
+    content.into()
 }
 
 /// Collection card widget with actions (show documents, delete)
