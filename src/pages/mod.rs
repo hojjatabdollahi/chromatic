@@ -3,6 +3,7 @@
 //! Page view modules for the Chromatic application.
 //! Each module contains the view logic for a specific page.
 
+pub mod browser;
 pub mod collections;
 pub mod dashboard;
 pub mod documents;

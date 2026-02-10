@@ -5,6 +5,8 @@ use crate::config::{Config, ServerConfig};
 use crate::fl;
 use crate::helpers;
 use crate::pages;
+use crate::pages::browser::{BrowserData, BrowserDialog, BrowserMsg, BrowserState};
+use crate::widgets::miller_columns::MillerMessage;
 use cosmic::app::context_drawer;
 use cosmic::cosmic_config::{self, CosmicConfigEntry};
 use cosmic::iced::{Length, Subscription};
@@ -94,6 +96,8 @@ pub struct AppModel {
     pub new_collection_name: String,
     /// Whether the new collection dialog is open
     pub show_new_collection_dialog: bool,
+    /// Browser page state
+    pub browser: BrowserState,
 }
 
 /// What's missing during validation
@@ -235,6 +239,9 @@ pub enum Message {
     ConfirmDeleteDocument,
     CancelDeleteDocument,
     DeleteDocumentResult(Result<(), String>),
+
+    // Browser
+    Browser(BrowserMsg),
 }
 
 /// Create a COSMIC application from the app model
@@ -264,14 +271,19 @@ impl cosmic::Application for AppModel {
         core: cosmic::Core,
         _flags: Self::Flags,
     ) -> (Self, Task<cosmic::Action<Self::Message>>) {
-        // Create a nav bar with three pages: Dashboard, Collections and Settings
+        // Create a nav bar with four pages: Browser, Dashboard, Collections and Settings
         let mut nav = nav_bar::Model::default();
+
+        nav.insert()
+            .text("Browser")
+            .data::<Page>(Page::Browser)
+            .icon(icon::from_name("folder-open-symbolic"))
+            .activate();
 
         nav.insert()
             .text(fl!("dashboard"))
             .data::<Page>(Page::Dashboard)
-            .icon(icon::from_name("utilities-system-monitor-symbolic"))
-            .activate();
+            .icon(icon::from_name("utilities-system-monitor-symbolic"));
 
         nav.insert()
             .text(fl!("collections"))
@@ -306,6 +318,9 @@ impl cosmic::Application for AppModel {
 
         // Compute server names for dropdown
         let server_names: Vec<String> = config.servers.iter().map(|s| s.name.clone()).collect();
+
+        // Initialize browser state before config moves
+        let browser = BrowserState::new(&config.servers);
 
         // Construct the app model with the runtime's core.
         let mut app = AppModel {
@@ -345,6 +360,7 @@ impl cosmic::Application for AppModel {
             delete_document_target: None,
             new_collection_name: String::new(),
             show_new_collection_dialog: false,
+            browser,
         };
 
         // Create a startup command that sets the window title.
@@ -398,7 +414,10 @@ impl cosmic::Application for AppModel {
         let space_m = cosmic::theme::spacing().space_m;
 
         let page_content: Element<_> =
-            match self.nav.active_data::<Page>().unwrap_or(&Page::Dashboard) {
+            match self.nav.active_data::<Page>().unwrap_or(&Page::Browser) {
+                Page::Browser => {
+                    pages::browser::view(&self.browser, Message::Browser, space_s, space_m)
+                }
                 Page::Dashboard => pages::dashboard::view(self, space_s, space_m),
                 Page::Collections => {
                     // Show documents view if a collection is selected
@@ -1253,6 +1272,11 @@ impl cosmic::Application for AppModel {
                     }
                 }
             }
+
+            // Browser messages
+            Message::Browser(browser_msg) => {
+                return self.handle_browser_message(browser_msg);
+            }
         }
         Task::none()
     }
@@ -1280,12 +1304,507 @@ impl AppModel {
             Task::none()
         }
     }
+
+    /// Handles browser messages.
+    fn handle_browser_message(&mut self, msg: BrowserMsg) -> Task<cosmic::Action<Message>> {
+        match msg {
+            BrowserMsg::Miller(miller_msg) => {
+                match miller_msg {
+                    MillerMessage::Select { column: _, path, item } => {
+                        // Update selection in miller state using full path
+                        self.browser.miller.select(path);
+
+                        // If it's a branch item, we need to load children
+                        match &item.data {
+                            BrowserData::Server { index, config } => {
+                                // Load tenants for this server
+                                let server_index = *index;
+                                self.browser.set_tenants_loading(server_index);
+                                let url = config.server_url.clone();
+                                let token = config.auth_token.clone();
+                                let auth_header_type = config.auth_header_type.clone();
+
+                                return cosmic::task::future(async move {
+                                    let result =
+                                        helpers::fetch_tenants(&url, &token, &auth_header_type)
+                                            .await;
+                                    cosmic::Action::App(Message::Browser(BrowserMsg::TenantsLoaded {
+                                        server_index,
+                                        result,
+                                    }))
+                                });
+                            }
+                            BrowserData::Tenant { server_index, name } => {
+                                // Load databases for this tenant
+                                let server_index = *server_index;
+                                let tenant = name.clone();
+                                self.browser.set_databases_loading(server_index, &tenant);
+
+                                let config = &self.config.servers[server_index];
+                                let url = config.server_url.clone();
+                                let token = config.auth_token.clone();
+                                let auth_header_type = config.auth_header_type.clone();
+
+                                return cosmic::task::future(async move {
+                                    let result = helpers::fetch_databases(
+                                        &url,
+                                        &token,
+                                        &auth_header_type,
+                                        &tenant,
+                                    )
+                                    .await;
+                                    cosmic::Action::App(Message::Browser(
+                                        BrowserMsg::DatabasesLoaded {
+                                            server_index,
+                                            tenant,
+                                            result,
+                                        },
+                                    ))
+                                });
+                            }
+                            BrowserData::Database {
+                                server_index,
+                                tenant,
+                                name,
+                            } => {
+                                // Load collections for this database
+                                let server_index = *server_index;
+                                let tenant = tenant.clone();
+                                let database = name.clone();
+                                self.browser
+                                    .set_collections_loading(server_index, &tenant, &database);
+
+                                let config = &self.config.servers[server_index];
+                                let url = config.server_url.clone();
+                                let token = config.auth_token.clone();
+                                let auth_header_type = config.auth_header_type.clone();
+
+                                return cosmic::task::future(async move {
+                                    let result = helpers::fetch_collections(
+                                        &url,
+                                        &token,
+                                        &auth_header_type,
+                                        &tenant,
+                                        &database,
+                                    )
+                                    .await;
+                                    cosmic::Action::App(Message::Browser(
+                                        BrowserMsg::CollectionsLoaded {
+                                            server_index,
+                                            tenant,
+                                            database,
+                                            result,
+                                        },
+                                    ))
+                                });
+                            }
+                            BrowserData::Collection {
+                                server_index,
+                                tenant,
+                                database,
+                                collection,
+                            } => {
+                                // Load documents for this collection
+                                let server_index = *server_index;
+                                let tenant = tenant.clone();
+                                let database = database.clone();
+                                let collection_id = collection.id.clone();
+                                self.browser.set_documents_loading(
+                                    server_index,
+                                    &tenant,
+                                    &database,
+                                    &collection_id,
+                                );
+
+                                let config = &self.config.servers[server_index];
+                                let url = config.server_url.clone();
+                                let token = config.auth_token.clone();
+                                let auth_header_type = config.auth_header_type.clone();
+
+                                return cosmic::task::future(async move {
+                                    let result = helpers::fetch_documents(
+                                        &url,
+                                        &token,
+                                        &auth_header_type,
+                                        &collection_id,
+                                        &tenant,
+                                        &database,
+                                        100, // limit
+                                        0,   // offset
+                                    )
+                                    .await;
+                                    cosmic::Action::App(Message::Browser(
+                                        BrowserMsg::DocumentsLoaded {
+                                            server_index,
+                                            tenant,
+                                            database,
+                                            collection_id,
+                                            result,
+                                        },
+                                    ))
+                                });
+                            }
+                            BrowserData::Document { document, .. } => {
+                                // Show document preview
+                                self.browser.selected_document = Some(document.clone());
+                            }
+                            _ => {}
+                        }
+                    }
+                    MillerMessage::Activate { item, .. } => {
+                        // Handle activation (e.g., click on leaf items like "Add" buttons)
+                        match &item.data {
+                            BrowserData::AddServer => {
+                                self.browser.dialog = Some(BrowserDialog::AddServer {
+                                    name: String::new(),
+                                });
+                            }
+                            BrowserData::AddTenant { server_index } => {
+                                self.browser.dialog = Some(BrowserDialog::AddTenant {
+                                    server_index: *server_index,
+                                    name: String::new(),
+                                });
+                            }
+                            BrowserData::AddDatabase {
+                                server_index,
+                                tenant,
+                            } => {
+                                self.browser.dialog = Some(BrowserDialog::AddDatabase {
+                                    server_index: *server_index,
+                                    tenant: tenant.clone(),
+                                    name: String::new(),
+                                });
+                            }
+                            BrowserData::AddCollection {
+                                server_index,
+                                tenant,
+                                database,
+                            } => {
+                                self.browser.dialog = Some(BrowserDialog::AddCollection {
+                                    server_index: *server_index,
+                                    tenant: tenant.clone(),
+                                    database: database.clone(),
+                                    name: String::new(),
+                                });
+                            }
+                            BrowserData::Document { document, .. } => {
+                                // Show document preview
+                                self.browser.selected_document = Some(document.clone());
+                            }
+                            _ => {}
+                        }
+                    }
+                    MillerMessage::NeedChildren { .. } => {
+                        // This is handled by Select above
+                    }
+                    MillerMessage::Scroll { .. } => {
+                        // Handle scroll if needed
+                    }
+                }
+            }
+
+            BrowserMsg::TenantsLoaded {
+                server_index,
+                result,
+            } => match result {
+                Ok(tenants) => {
+                    self.browser.set_tenants(server_index, tenants);
+                }
+                Err(e) => {
+                    self.browser.set_tenants_error(server_index, e);
+                }
+            },
+
+            BrowserMsg::DatabasesLoaded {
+                server_index,
+                tenant,
+                result,
+            } => match result {
+                Ok(databases) => {
+                    self.browser.set_databases(server_index, &tenant, databases);
+                }
+                Err(e) => {
+                    self.browser.set_databases_error(server_index, &tenant, e);
+                }
+            },
+
+            BrowserMsg::CollectionsLoaded {
+                server_index,
+                tenant,
+                database,
+                result,
+            } => match result {
+                Ok(collections) => {
+                    self.browser
+                        .set_collections(server_index, &tenant, &database, collections);
+                }
+                Err(e) => {
+                    self.browser
+                        .set_collections_error(server_index, &tenant, &database, e);
+                }
+            },
+
+            BrowserMsg::DocumentsLoaded {
+                server_index,
+                tenant,
+                database,
+                collection_id,
+                result,
+            } => match result {
+                Ok(documents) => {
+                    self.browser.set_documents(
+                        server_index,
+                        &tenant,
+                        &database,
+                        &collection_id,
+                        documents,
+                    );
+                }
+                Err(e) => {
+                    self.browser
+                        .set_documents_error(server_index, &tenant, &database, &collection_id, e);
+                }
+            },
+
+            BrowserMsg::DialogInputChanged(value) => {
+                if let Some(ref mut dialog) = self.browser.dialog {
+                    match dialog {
+                        BrowserDialog::AddServer { name } => *name = value,
+                        BrowserDialog::AddTenant { name, .. } => *name = value,
+                        BrowserDialog::AddDatabase { name, .. } => *name = value,
+                        BrowserDialog::AddCollection { name, .. } => *name = value,
+                    }
+                }
+            }
+
+            BrowserMsg::DialogCancel => {
+                self.browser.dialog = None;
+            }
+
+            BrowserMsg::DialogConfirm => {
+                if let Some(dialog) = self.browser.dialog.take() {
+                    match dialog {
+                        BrowserDialog::AddServer { name } => {
+                            // Add new server to config
+                            let new_server = ServerConfig::new(&name);
+                            self.config.add_server(new_server);
+                            if let Some(ref context) = self.config_context {
+                                let _ = self.config.write_entry(context);
+                            }
+                            // Refresh browser with new servers
+                            self.browser.refresh_servers(&self.config.servers);
+                            self.server_names =
+                                self.config.servers.iter().map(|s| s.name.clone()).collect();
+                        }
+                        BrowserDialog::AddTenant { server_index, name } => {
+                            // Create tenant
+                            let config = &self.config.servers[server_index];
+                            let url = config.server_url.clone();
+                            let token = config.auth_token.clone();
+                            let auth_header_type = config.auth_header_type.clone();
+
+                            return cosmic::task::future(async move {
+                                let result =
+                                    helpers::create_tenant(&url, &token, &auth_header_type, &name)
+                                        .await;
+                                cosmic::Action::App(Message::Browser(BrowserMsg::TenantCreated {
+                                    server_index,
+                                    tenant: name,
+                                    result,
+                                }))
+                            });
+                        }
+                        BrowserDialog::AddDatabase {
+                            server_index,
+                            tenant,
+                            name,
+                        } => {
+                            // Create database
+                            let config = &self.config.servers[server_index];
+                            let url = config.server_url.clone();
+                            let token = config.auth_token.clone();
+                            let auth_header_type = config.auth_header_type.clone();
+
+                            return cosmic::task::future(async move {
+                                let result = helpers::create_database(
+                                    &url,
+                                    &token,
+                                    &auth_header_type,
+                                    &name,
+                                    &tenant,
+                                )
+                                .await;
+                                cosmic::Action::App(Message::Browser(BrowserMsg::DatabaseCreated {
+                                    server_index,
+                                    tenant,
+                                    database: name,
+                                    result,
+                                }))
+                            });
+                        }
+                        BrowserDialog::AddCollection {
+                            server_index,
+                            tenant,
+                            database,
+                            name,
+                        } => {
+                            // Create collection
+                            let config = &self.config.servers[server_index];
+                            let url = config.server_url.clone();
+                            let token = config.auth_token.clone();
+                            let auth_header_type = config.auth_header_type.clone();
+
+                            return cosmic::task::future(async move {
+                                let result = helpers::create_collection(
+                                    &url,
+                                    &token,
+                                    &auth_header_type,
+                                    &name,
+                                    &tenant,
+                                    &database,
+                                )
+                                .await;
+                                cosmic::Action::App(Message::Browser(
+                                    BrowserMsg::CollectionCreated {
+                                        server_index,
+                                        tenant,
+                                        database,
+                                        result,
+                                    },
+                                ))
+                            });
+                        }
+                    }
+                }
+            }
+
+            BrowserMsg::ServerCreated => {
+                // Refresh servers
+                self.browser.refresh_servers(&self.config.servers);
+            }
+
+            BrowserMsg::TenantCreated {
+                server_index,
+                tenant,
+                result,
+            } => match result {
+                Ok(()) => {
+                    // Refresh tenants for this server
+                    self.browser.set_tenants_loading(server_index);
+                    let config = &self.config.servers[server_index];
+                    let url = config.server_url.clone();
+                    let token = config.auth_token.clone();
+                    let auth_header_type = config.auth_header_type.clone();
+
+                    return cosmic::task::future(async move {
+                        let result =
+                            helpers::fetch_tenants(&url, &token, &auth_header_type).await;
+                        cosmic::Action::App(Message::Browser(BrowserMsg::TenantsLoaded {
+                            server_index,
+                            result,
+                        }))
+                    });
+                }
+                Err(e) => {
+                    self.notification_id_counter += 1;
+                    self.notifications.push(Notification {
+                        id: self.notification_id_counter,
+                        level: NotificationLevel::Error,
+                        title: format!("Failed to create tenant '{}'", tenant),
+                        message: e,
+                    });
+                }
+            },
+
+            BrowserMsg::DatabaseCreated {
+                server_index,
+                tenant,
+                database,
+                result,
+            } => match result {
+                Ok(()) => {
+                    // Refresh databases for this tenant
+                    self.browser.set_databases_loading(server_index, &tenant);
+                    let config = &self.config.servers[server_index];
+                    let url = config.server_url.clone();
+                    let token = config.auth_token.clone();
+                    let auth_header_type = config.auth_header_type.clone();
+
+                    return cosmic::task::future(async move {
+                        let result =
+                            helpers::fetch_databases(&url, &token, &auth_header_type, &tenant)
+                                .await;
+                        cosmic::Action::App(Message::Browser(BrowserMsg::DatabasesLoaded {
+                            server_index,
+                            tenant,
+                            result,
+                        }))
+                    });
+                }
+                Err(e) => {
+                    self.notification_id_counter += 1;
+                    self.notifications.push(Notification {
+                        id: self.notification_id_counter,
+                        level: NotificationLevel::Error,
+                        title: format!("Failed to create database '{}'", database),
+                        message: e,
+                    });
+                }
+            },
+
+            BrowserMsg::CollectionCreated {
+                server_index,
+                tenant,
+                database,
+                result,
+            } => match result {
+                Ok(_collection) => {
+                    // Refresh collections for this database
+                    self.browser
+                        .set_collections_loading(server_index, &tenant, &database);
+                    let config = &self.config.servers[server_index];
+                    let url = config.server_url.clone();
+                    let token = config.auth_token.clone();
+                    let auth_header_type = config.auth_header_type.clone();
+
+                    return cosmic::task::future(async move {
+                        let result = helpers::fetch_collections(
+                            &url,
+                            &token,
+                            &auth_header_type,
+                            &tenant,
+                            &database,
+                        )
+                        .await;
+                        cosmic::Action::App(Message::Browser(BrowserMsg::CollectionsLoaded {
+                            server_index,
+                            tenant,
+                            database,
+                            result,
+                        }))
+                    });
+                }
+                Err(e) => {
+                    self.notification_id_counter += 1;
+                    self.notifications.push(Notification {
+                        id: self.notification_id_counter,
+                        level: NotificationLevel::Error,
+                        title: "Failed to create collection".to_string(),
+                        message: e,
+                    });
+                }
+            },
+        }
+
+        Task::none()
+    }
 }
 
 /// The page to display in the application.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Page {
     #[default]
+    Browser,
     Dashboard,
     Collections,
     Settings,

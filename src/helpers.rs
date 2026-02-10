@@ -221,3 +221,34 @@ pub async fn delete_document(
         .await
         .map_err(|e| e.to_string())
 }
+
+/// Create a new tenant
+pub async fn create_tenant(
+    url: &str,
+    token: &str,
+    auth_header_type: &str,
+    name: &str,
+) -> Result<(), String> {
+    let client = create_client(url, token, auth_header_type).await?;
+    client
+        .create_tenant(name)
+        .await
+        .map(|_| ())
+        .map_err(|e| e.to_string())
+}
+
+/// Create a new database
+pub async fn create_database(
+    url: &str,
+    token: &str,
+    auth_header_type: &str,
+    name: &str,
+    tenant: &str,
+) -> Result<(), String> {
+    let client = create_client(url, token, auth_header_type).await?;
+    client
+        .create_database(tenant, name)
+        .await
+        .map(|_| ())
+        .map_err(|e| e.to_string())
+}
