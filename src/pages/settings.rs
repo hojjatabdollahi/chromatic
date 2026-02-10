@@ -12,20 +12,14 @@ use cosmic::widget::{self, icon};
 pub fn view(app: &AppModel, space_s: u16, space_m: u16) -> Element<'_, Message> {
     let header = widget::text::title1(fl!("settings"));
 
-    // Server selection section - show dropdown-style selector of saved servers
-    let mut server_selector = widget::row::with_capacity(app.config.servers.len() + 1);
-    for (index, server) in app.config.servers.iter().enumerate() {
-        let is_active = index == app.config.active_server;
-        let button = widget::button::text(&server.name)
-            .class(if is_active {
-                cosmic::theme::Button::Suggested
-            } else {
-                cosmic::theme::Button::Standard
+    // Server selection - dropdown with add button
+    let server_selector = widget::row::with_capacity(2)
+        .push(
+            widget::dropdown(&app.server_names, Some(app.config.active_server), |idx| {
+                Message::SelectServer(idx)
             })
-            .on_press(Message::SelectServer(index));
-        server_selector = server_selector.push(button);
-    }
-    server_selector = server_selector
+            .width(Length::Fixed(200.0)),
+        )
         .push(
             widget::button::icon(icon::from_name("list-add-symbolic"))
                 .on_press(Message::AddNewServer),
@@ -38,7 +32,7 @@ pub fn view(app: &AppModel, space_s: u16, space_m: u16) -> Element<'_, Message> 
         .add(
             cosmic::widget::settings::item::builder(fl!("saved-servers"))
                 .description(fl!("saved-servers-description"))
-                .control(server_selector),
+                .flex_control(server_selector),
         );
 
     // Clone data for dropdown closures
@@ -51,7 +45,7 @@ pub fn view(app: &AppModel, space_s: u16, space_m: u16) -> Element<'_, Message> 
         .add(
             cosmic::widget::settings::item::builder(fl!("server-name"))
                 .description(fl!("server-name-description"))
-                .control(
+                .flex_control(
                     widget::text_input(fl!("server-name-placeholder"), &app.server_name_input)
                         .on_input(Message::ServerNameChanged)
                         .width(Length::Fixed(300.0)),
@@ -60,7 +54,7 @@ pub fn view(app: &AppModel, space_s: u16, space_m: u16) -> Element<'_, Message> 
         .add(
             cosmic::widget::settings::item::builder(fl!("server-url"))
                 .description(fl!("server-url-description"))
-                .control(
+                .flex_control(
                     widget::text_input(fl!("server-url-placeholder"), &app.server_url_input)
                         .on_input(Message::ServerUrlChanged)
                         .width(Length::Fixed(300.0)),
@@ -69,7 +63,7 @@ pub fn view(app: &AppModel, space_s: u16, space_m: u16) -> Element<'_, Message> 
         .add(
             cosmic::widget::settings::item::builder(fl!("auth-token"))
                 .description(fl!("auth-token-description"))
-                .control(
+                .flex_control(
                     widget::secure_input(
                         fl!("auth-token-placeholder"),
                         &app.auth_token_input,
@@ -83,7 +77,7 @@ pub fn view(app: &AppModel, space_s: u16, space_m: u16) -> Element<'_, Message> 
         .add(
             cosmic::widget::settings::item::builder(fl!("auth-header-type"))
                 .description(fl!("auth-header-type-description"))
-                .control(
+                .flex_control(
                     widget::row::with_capacity(2)
                         .push(
                             widget::button::text("Authorization: Bearer")
@@ -113,7 +107,7 @@ pub fn view(app: &AppModel, space_s: u16, space_m: u16) -> Element<'_, Message> 
         .add(
             cosmic::widget::settings::item::builder(fl!("tenant"))
                 .description(fl!("tenant-description"))
-                .control({
+                .flex_control({
                     let mut col = widget::column::with_capacity(3)
                         .push(
                             widget::row::with_capacity(2)
@@ -163,7 +157,7 @@ pub fn view(app: &AppModel, space_s: u16, space_m: u16) -> Element<'_, Message> 
         .add(
             cosmic::widget::settings::item::builder(fl!("database"))
                 .description(fl!("database-description"))
-                .control({
+                .flex_control({
                     let mut col = widget::column::with_capacity(3)
                         .push(
                             widget::row::with_capacity(2)
@@ -216,7 +210,7 @@ pub fn view(app: &AppModel, space_s: u16, space_m: u16) -> Element<'_, Message> 
         server_section = server_section.add(
             cosmic::widget::settings::item::builder(fl!("delete-server"))
                 .description(fl!("delete-server-description"))
-                .control(
+                .flex_control(
                     widget::button::destructive(fl!("delete"))
                         .on_press(Message::DeleteServer(app.config.active_server)),
                 ),

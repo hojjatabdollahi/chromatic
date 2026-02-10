@@ -74,12 +74,13 @@ pub fn view(app: &AppModel, space_s: u16, space_m: u16) -> Element<'_, Message> 
             .align_y(Alignment::Center);
 
         // Previous button
-        let prev_button = if app.collections_page > 0 {
-            widget::button::icon(icon::from_name("go-previous-symbolic"))
-                .on_press(Message::CollectionsPrevPage)
-        } else {
-            widget::button::icon(icon::from_name("go-previous-symbolic"))
-        };
+        let prev_button = widget::button::icon(icon::from_name("go-previous-symbolic"))
+            .class(cosmic::theme::Button::Standard)
+            .on_press_maybe(if app.collections_page > 0 {
+                Some(Message::CollectionsPrevPage)
+            } else {
+                None
+            });
         pagination_row = pagination_row.push(prev_button);
 
         // Page info
@@ -92,12 +93,13 @@ pub fn view(app: &AppModel, space_s: u16, space_m: u16) -> Element<'_, Message> 
         pagination_row = pagination_row.push(page_info);
 
         // Next button
-        let next_button = if app.collections_page + 1 < total_pages {
-            widget::button::icon(icon::from_name("go-next-symbolic"))
-                .on_press(Message::CollectionsNextPage)
-        } else {
-            widget::button::icon(icon::from_name("go-next-symbolic"))
-        };
+        let next_button = widget::button::icon(icon::from_name("go-next-symbolic"))
+            .class(cosmic::theme::Button::Standard)
+            .on_press_maybe(if app.collections_page + 1 < total_pages {
+                Some(Message::CollectionsNextPage)
+            } else {
+                None
+            });
         pagination_row = pagination_row.push(next_button);
 
         // Total items count

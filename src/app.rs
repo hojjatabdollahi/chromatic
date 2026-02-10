@@ -68,6 +68,8 @@ pub struct AppModel {
     pub tenants_load_error: Option<String>,
     /// Error message when loading databases fails
     pub databases_load_error: Option<String>,
+    /// Server names for dropdown (derived from config.servers)
+    pub server_names: Vec<String>,
     /// Current page for collections list (0-indexed)
     pub collections_page: usize,
     /// Current page for documents list (0-indexed)
@@ -237,6 +239,9 @@ impl cosmic::Application for AppModel {
         // Get active server config for initializing input fields
         let active = config.active_config();
         
+        // Compute server names for dropdown
+        let server_names: Vec<String> = config.servers.iter().map(|s| s.name.clone()).collect();
+
         // Construct the app model with the runtime's core.
         let mut app = AppModel {
             core,
@@ -263,6 +268,7 @@ impl cosmic::Application for AppModel {
             available_tenants: Vec::new(),
             tenants_load_error: None,
             databases_load_error: None,
+            server_names,
             collections_page: 0,
             documents_page: 0,
             items_per_page: 20,
@@ -430,6 +436,8 @@ impl cosmic::Application for AppModel {
                 if let Some(ref context) = self.config_context {
                     let _ = self.config.write_entry(context);
                 }
+                // Update server names for dropdown
+                self.server_names = self.config.servers.iter().map(|s| s.name.clone()).collect();
                 // Update input fields
                 let active = self.config.active_config();
                 self.server_name_input = active.name.clone();
@@ -451,6 +459,8 @@ impl cosmic::Application for AppModel {
                     if let Some(ref context) = self.config_context {
                         let _ = self.config.write_entry(context);
                     }
+                    // Update server names for dropdown
+                    self.server_names = self.config.servers.iter().map(|s| s.name.clone()).collect();
                     // Update input fields with the (possibly new) active server
                     let active = self.config.active_config();
                     self.server_name_input = active.name.clone();
@@ -478,6 +488,8 @@ impl cosmic::Application for AppModel {
                     active.tenant = self.tenant_input.clone();
                     active.database = self.database_input.clone();
                 }
+                // Update server names for dropdown (name might have changed)
+                self.server_names = self.config.servers.iter().map(|s| s.name.clone()).collect();
                 
                 if let Some(ref context) = self.config_context {
                     if let Err(e) = self.config.write_entry(context) {

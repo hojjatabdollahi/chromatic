@@ -103,7 +103,7 @@ pub fn view(app: &AppModel, _space_s: u16, space_m: u16) -> Element<'_, Message>
         .into()
 }
 
-/// Helper to create a stat card widget
+/// Helper to create a stat card widget that grows with content
 fn stat_card(label: String, value: String) -> Element<'static, Message> {
     widget::container(
         widget::column::with_capacity(2)
@@ -112,7 +112,7 @@ fn stat_card(label: String, value: String) -> Element<'static, Message> {
             .spacing(4),
     )
     .padding(cosmic::theme::spacing().space_s)
-    .width(Length::Fixed(180.0))
+    .width(Length::Shrink)
     .class(cosmic::style::Container::Card)
     .into()
 }

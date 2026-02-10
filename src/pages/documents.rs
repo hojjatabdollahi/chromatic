@@ -80,12 +80,13 @@ pub fn view(app: &AppModel, space_s: u16, space_m: u16) -> Element<'_, Message> 
             .align_y(Alignment::Center);
 
         // Previous button
-        let prev_button = if app.documents_page > 0 {
-            widget::button::icon(icon::from_name("go-previous-symbolic"))
-                .on_press(Message::DocumentsPrevPage)
-        } else {
-            widget::button::icon(icon::from_name("go-previous-symbolic"))
-        };
+        let prev_button = widget::button::icon(icon::from_name("go-previous-symbolic"))
+            .class(cosmic::theme::Button::Standard)
+            .on_press_maybe(if app.documents_page > 0 {
+                Some(Message::DocumentsPrevPage)
+            } else {
+                None
+            });
         pagination_row = pagination_row.push(prev_button);
 
         // Page number
@@ -95,13 +96,14 @@ pub fn view(app: &AppModel, space_s: u16, space_m: u16) -> Element<'_, Message> 
             app.documents_page + 1
         )));
 
-        // Next button (always enabled since we don't know total)
-        let next_button = if app.documents.len() >= app.items_per_page {
-            widget::button::icon(icon::from_name("go-next-symbolic"))
-                .on_press(Message::DocumentsNextPage)
-        } else {
-            widget::button::icon(icon::from_name("go-next-symbolic"))
-        };
+        // Next button (enabled if current page is full, indicating more might exist)
+        let next_button = widget::button::icon(icon::from_name("go-next-symbolic"))
+            .class(cosmic::theme::Button::Standard)
+            .on_press_maybe(if app.documents.len() >= app.items_per_page {
+                Some(Message::DocumentsNextPage)
+            } else {
+                None
+            });
         pagination_row = pagination_row.push(next_button);
 
         widget::column::with_capacity(2)
