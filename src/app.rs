@@ -1521,6 +1521,8 @@ impl AppModel {
                         }
                     }
                     self.browser.set_tenants(server_index, tenants);
+                    // Scroll to show new column
+                    return self.browser.scroll_to_end();
                 }
                 Err(e) => {
                     // Even on error, show tenants from config if available
@@ -1528,7 +1530,7 @@ impl AppModel {
                         let config_tenants = self.config.servers[server_index].tenants.clone();
                         if !config_tenants.is_empty() {
                             self.browser.set_tenants(server_index, config_tenants);
-                            return Task::none();
+                            return self.browser.scroll_to_end();
                         }
                     }
                     self.browser.set_tenants_error(server_index, e);
@@ -1542,6 +1544,8 @@ impl AppModel {
             } => match result {
                 Ok(databases) => {
                     self.browser.set_databases(server_index, &tenant, databases);
+                    // Scroll to show new column
+                    return self.browser.scroll_to_end();
                 }
                 Err(e) => {
                     // Check if the error indicates tenant doesn't exist
@@ -1571,6 +1575,8 @@ impl AppModel {
                 Ok(collections) => {
                     self.browser
                         .set_collections(server_index, &tenant, &database, collections);
+                    // Scroll to show new column
+                    return self.browser.scroll_to_end();
                 }
                 Err(e) => {
                     self.browser
@@ -1593,6 +1599,8 @@ impl AppModel {
                         &collection_id,
                         documents,
                     );
+                    // Scroll to show new column
+                    return self.browser.scroll_to_end();
                 }
                 Err(e) => {
                     self.browser

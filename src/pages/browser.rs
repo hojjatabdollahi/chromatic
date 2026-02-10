@@ -14,8 +14,9 @@ use crate::api::{Collection, Document};
 use crate::config::ServerConfig;
 use crate::widgets::miller_columns::{MillerItem, MillerItemType, MillerMessage, MillerState};
 use cosmic::iced::{Alignment, Length};
+use cosmic::iced_widget::scrollable::{snap_to, RelativeOffset};
 use cosmic::prelude::*;
-use cosmic::widget::{self, icon};
+use cosmic::widget::{self, icon, Id};
 use std::collections::HashMap;
 
 /// The type of data represented by a browser item.
@@ -95,7 +96,7 @@ impl AddServerForm {
 }
 
 /// State specific to the browser page.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct BrowserState {
     /// The Miller columns state
     pub miller: MillerState<BrowserData>,
@@ -113,6 +114,24 @@ pub struct BrowserState {
     pub dialog: Option<BrowserDialog>,
     /// Add server form (shown inline instead of dialog)
     pub adding_server: Option<AddServerForm>,
+    /// Scrollable ID for the browser view (for auto-scrolling)
+    pub scrollable_id: Id,
+}
+
+impl Default for BrowserState {
+    fn default() -> Self {
+        Self {
+            miller: MillerState::default(),
+            tenants_cache: HashMap::new(),
+            databases_cache: HashMap::new(),
+            collections_cache: HashMap::new(),
+            documents_cache: HashMap::new(),
+            selected_document: None,
+            dialog: None,
+            adding_server: None,
+            scrollable_id: Id::unique(),
+        }
+    }
 }
 
 /// Dialog types for adding new items.
@@ -165,7 +184,16 @@ impl BrowserState {
             selected_document: None,
             dialog: None,
             adding_server: None,
+            scrollable_id: Id::unique(),
         }
+    }
+
+    /// Returns a task to scroll the browser view to the right (to show new columns).
+    pub fn scroll_to_end<T>(&self) -> cosmic::Task<T> {
+        snap_to(
+            self.scrollable_id.clone(),
+            RelativeOffset { x: 1.0, y: 0.0 },
+        )
     }
 
     /// Rebuilds the root items from server configs.
@@ -606,6 +634,7 @@ pub fn view<'a, Message: Clone + 'static>(
 
     // Wrap in horizontal scrollable inside a container that fills space
     let scrollable_content: Element<'a, Message> = widget::scrollable(inner_content)
+        .id(state.scrollable_id.clone())
         .direction(Direction::Horizontal(Scrollbar::default()))
         .width(Length::Fill)
         .height(Length::Fill)
