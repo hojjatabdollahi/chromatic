@@ -6,7 +6,8 @@ use crate::fl;
 use crate::helpers;
 use crate::pages;
 use crate::pages::browser::{
-    AddServerForm, AddServerStatus, BrowserDialog, BrowserMsg, BrowserState,
+    AddServerForm, AddServerStatus, AddTenantForm, BrowserDialog, BrowserMsg, BrowserState,
+    ColumnLevel, MenuContext,
 };
 use cosmetics::widgets::column_view::ColumnViewMessage;
 use cosmic::app::context_drawer;
@@ -1638,10 +1639,8 @@ impl AppModel {
             BrowserMsg::DialogInputChanged(value) => {
                 if let Some(ref mut dialog) = self.browser.dialog {
                     match dialog {
-                        BrowserDialog::AddServer { name } => *name = value,
-                        BrowserDialog::AddTenant { name, .. } => *name = value,
-                        BrowserDialog::AddDatabase { name, .. } => *name = value,
-                        BrowserDialog::AddCollection { name, .. } => *name = value,
+                        BrowserDialog::AddDatabase { name, .. }
+                        | BrowserDialog::AddCollection { name, .. } => *name = value,
                         BrowserDialog::ConfirmCreateTenant { .. } => {}
                     }
                 }
@@ -1654,35 +1653,6 @@ impl AppModel {
             BrowserMsg::DialogConfirm => {
                 if let Some(dialog) = self.browser.dialog.take() {
                     match dialog {
-                        BrowserDialog::AddServer { name } => {
-                            let new_server = ServerConfig::new(&name);
-                            self.config.add_server(new_server);
-                            if let Some(ref context) = self.config_context {
-                                let _ = self.config.write_entry(context);
-                            }
-                            self.browser.refresh_servers(&self.config.servers);
-                            self.server_names =
-                                self.config.servers.iter().map(|s| s.name.clone()).collect();
-                        }
-                        BrowserDialog::AddTenant { server_index, name } => {
-                            let mut tenants = self
-                                .browser
-                                .tenants_cache
-                                .get(&server_index)
-                                .cloned()
-                                .unwrap_or_default();
-                            if !tenants.contains(&name) {
-                                tenants.push(name.clone());
-                                self.browser.set_tenants(server_index, tenants);
-
-                                if server_index < self.config.servers.len() {
-                                    self.config.servers[server_index].add_tenant(&name);
-                                    if let Some(ref context) = self.config_context {
-                                        let _ = self.config.write_entry(context);
-                                    }
-                                }
-                            }
-                        }
                         BrowserDialog::ConfirmCreateTenant {
                             server_index,
                             tenant,
@@ -1990,7 +1960,6 @@ impl AppModel {
             // ── Server edit/delete ───────────────────────────────────────
 
             BrowserMsg::StartEditServer { index } => {
-                self.browser.open_menu = None;
                 let config = &self.config.servers[index];
                 let form = AddServerForm {
                     name: config.name.clone(),
@@ -2026,7 +1995,6 @@ impl AppModel {
             }
 
             BrowserMsg::RequestDeleteServer { index } => {
-                self.browser.open_menu = None;
                 if index < self.config.servers.len() {
                     self.browser.tenants_cache.remove(&index);
                     let keys_to_remove: Vec<_> = self
@@ -2077,7 +2045,6 @@ impl AppModel {
                 tenant,
                 name,
             } => {
-                self.browser.open_menu = None;
                 let config = &self.config.servers[server_index];
                 let url = config.server_url.clone();
                 let token = config.auth_token.clone();
@@ -2102,7 +2069,6 @@ impl AppModel {
                 collection_id,
                 collection_name: _,
             } => {
-                self.browser.open_menu = None;
                 let config = &self.config.servers[server_index];
                 let url = config.server_url.clone();
                 let token = config.auth_token.clone();
@@ -2134,7 +2100,6 @@ impl AppModel {
                 collection_id,
                 document_id,
             } => {
-                self.browser.open_menu = None;
                 let config = &self.config.servers[server_index];
                 let url = config.server_url.clone();
                 let token = config.auth_token.clone();
@@ -2314,13 +2279,6 @@ impl AppModel {
 
             // ── Add-new dialog openers ───────────────────────────────────
 
-            BrowserMsg::OpenAddTenantDialog { server_index } => {
-                self.browser.dialog = Some(BrowserDialog::AddTenant {
-                    server_index,
-                    name: String::new(),
-                });
-            }
-
             BrowserMsg::OpenAddDatabaseDialog { server_index, tenant } => {
                 self.browser.dialog = Some(BrowserDialog::AddDatabase {
                     server_index,
@@ -2342,40 +2300,192 @@ impl AppModel {
                 });
             }
 
-            // ── Menu ─────────────────────────────────────────────────────
+            // ── Add/edit tenant form ─────────────────────────────────────
 
-            BrowserMsg::ToggleMenu(menu_id) => {
-                if self.browser.open_menu.as_ref() == Some(&menu_id) {
-                    self.browser.open_menu = None;
-                } else {
-                    self.browser.open_menu = Some(menu_id);
+            BrowserMsg::StartAddTenant => {
+                self.browser.adding_tenant = Some(AddTenantForm {
+                    name: String::new(),
+                    editing: None,
+                });
+            }
+
+            BrowserMsg::StartEditTenant { name } => {
+                self.browser.adding_tenant = Some(AddTenantForm {
+                    name: name.clone(),
+                    editing: Some(name),
+                });
+            }
+
+            BrowserMsg::CancelTenantForm => {
+                self.browser.adding_tenant = None;
+            }
+
+            BrowserMsg::TenantFormNameChanged(name) => {
+                if let Some(ref mut form) = self.browser.adding_tenant {
+                    form.name = name;
                 }
             }
 
-            BrowserMsg::CloseMenu => {
-                self.browser.open_menu = None;
+            BrowserMsg::SaveTenant => {
+                if let Some(form) = self.browser.adding_tenant.take() {
+                    if let Some(server_index) = self.browser.selected_server {
+                        let new_name = form.name.trim().to_string();
+                        if new_name.is_empty() {
+                            return Task::none();
+                        }
+
+                        if let Some(old_name) = form.editing {
+                            // Rename: remove old, add new
+                            if server_index < self.config.servers.len() {
+                                let tenants = &mut self.config.servers[server_index].tenants;
+                                if let Some(pos) = tenants.iter().position(|t| *t == old_name) {
+                                    tenants[pos] = new_name.clone();
+                                }
+                                if let Some(ref context) = self.config_context {
+                                    let _ = self.config.write_entry(context);
+                                }
+                            }
+                            // Update cache
+                            if let Some(cached) = self.browser.tenants_cache.get_mut(&server_index) {
+                                if let Some(pos) = cached.iter().position(|t| *t == old_name) {
+                                    cached[pos] = new_name.clone();
+                                }
+                            }
+                            // If selected tenant was the old name, update selection
+                            if self.browser.selected_tenant.as_deref() == Some(&old_name) {
+                                self.browser.selected_tenant = Some(new_name);
+                            }
+                        } else {
+                            // Add new tenant
+                            let mut tenants = self
+                                .browser
+                                .tenants_cache
+                                .get(&server_index)
+                                .cloned()
+                                .unwrap_or_default();
+                            if !tenants.contains(&new_name) {
+                                tenants.push(new_name.clone());
+                                self.browser.set_tenants(server_index, tenants);
+                                if server_index < self.config.servers.len() {
+                                    self.config.servers[server_index].add_tenant(&new_name);
+                                    if let Some(ref context) = self.config_context {
+                                        let _ = self.config.write_entry(context);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // ── Menu context & dispatched actions ────────────────────────
+
+            BrowserMsg::SetMenuContext(ctx) => {
+                self.browser.menu_context = Some(ctx);
+            }
+
+            BrowserMsg::EditTenantFromMenu => {
+                if let Some(MenuContext::Tenant { name, .. }) = self.browser.menu_context.take() {
+                    return self.handle_browser_message(BrowserMsg::StartEditTenant { name });
+                }
+            }
+
+            BrowserMsg::DeleteDatabaseFromMenu => {
+                if let Some(MenuContext::Database {
+                    server_index,
+                    tenant,
+                    name,
+                }) = self.browser.menu_context.take()
+                {
+                    return self.handle_browser_message(BrowserMsg::RequestDeleteDatabase {
+                        server_index,
+                        tenant,
+                        name,
+                    });
+                }
+            }
+
+            BrowserMsg::DeleteCollectionFromMenu => {
+                if let Some(MenuContext::Collection {
+                    server_index,
+                    tenant,
+                    database,
+                    collection_id,
+                    collection_name,
+                }) = self.browser.menu_context.take()
+                {
+                    return self.handle_browser_message(BrowserMsg::RequestDeleteCollection {
+                        server_index,
+                        tenant,
+                        database,
+                        collection_id,
+                        collection_name,
+                    });
+                }
+            }
+
+            BrowserMsg::DeleteDocumentFromMenu => {
+                if let Some(MenuContext::Document {
+                    server_index,
+                    tenant,
+                    database,
+                    collection_id,
+                    document_id,
+                }) = self.browser.menu_context.take()
+                {
+                    return self.handle_browser_message(BrowserMsg::RequestDeleteDocument {
+                        server_index,
+                        tenant,
+                        database,
+                        collection_id,
+                        document_id,
+                    });
+                }
             }
 
             // ── Filter ───────────────────────────────────────────────────
 
-            BrowserMsg::ToggleServerFilter => {
-                self.browser.server_filter_visible = !self.browser.server_filter_visible;
-                if !self.browser.server_filter_visible {
-                    self.browser.server_filter.clear();
+            BrowserMsg::ToggleFilter(level) => {
+                let (visible, filter) = filter_state(&mut self.browser, level);
+                *visible = !*visible;
+                if !*visible {
+                    filter.clear();
                 }
             }
 
-            BrowserMsg::FilterServers(filter) => {
-                self.browser.server_filter = filter;
+            BrowserMsg::UpdateFilter(level, value) => {
+                let (_, filter) = filter_state(&mut self.browser, level);
+                *filter = value;
             }
 
-            BrowserMsg::ClearServerFilter => {
-                self.browser.server_filter.clear();
-                self.browser.server_filter_visible = false;
+            BrowserMsg::ClearFilter(level) => {
+                let (visible, filter) = filter_state(&mut self.browser, level);
+                filter.clear();
+                *visible = false;
             }
         }
 
         Task::none()
+    }
+}
+
+/// Returns mutable references to the filter visibility and filter text for a column level.
+fn filter_state(browser: &mut BrowserState, level: ColumnLevel) -> (&mut bool, &mut String) {
+    match level {
+        ColumnLevel::Servers => (&mut browser.server_filter_visible, &mut browser.server_filter),
+        ColumnLevel::Tenants => (&mut browser.tenant_filter_visible, &mut browser.tenant_filter),
+        ColumnLevel::Databases => (
+            &mut browser.database_filter_visible,
+            &mut browser.database_filter,
+        ),
+        ColumnLevel::Collections => (
+            &mut browser.collection_filter_visible,
+            &mut browser.collection_filter,
+        ),
+        ColumnLevel::Documents => (
+            &mut browser.document_filter_visible,
+            &mut browser.document_filter,
+        ),
     }
 }
 
