@@ -1,69 +1,65 @@
 // SPDX-License-Identifier: MPL-2.0
 
-//! Browser page using Miller columns for hierarchical navigation.
+//! Browser page using column_view for hierarchical navigation.
 //!
 //! Column hierarchy:
-//! 1. Server configs (+ Add New)
+//! 1. Server configs (+ Add New inline form)
 //! 2. Tenants (+ Add New)
 //! 3. Databases (+ Add New)
 //! 4. Collections (+ Add New)
 //! 5. Documents
-//! 6. Document preview
+//!
+//! Each column is a fully custom Element built on the app side, with
+//! the column_view widget from cosmetics handling horizontal layout,
+//! scrolling, and resize handles.
 
 use crate::api::{Collection, Document};
 use crate::config::ServerConfig;
-use crate::widgets::miller_columns::{MillerItem, MillerItemType, MillerMessage, MillerState};
+use cosmetics::widgets::column_view::{column_view, ColumnViewMessage};
 use cosmic::iced::{Alignment, Length};
-use cosmic::iced_widget::scrollable::{RelativeOffset, snap_to};
+use cosmic::iced_widget::scrollable::{snap_to, RelativeOffset};
 use cosmic::prelude::*;
-use cosmic::widget::{self, Id, icon, popover};
+use cosmic::widget::{self, icon, popover, Id};
 use std::collections::HashMap;
 
-/// The type of data represented by a browser item.
-#[derive(Debug, Clone)]
-pub enum BrowserData {
-    /// A server configuration
-    Server { index: usize, config: ServerConfig },
-    /// Add new server action
-    AddServer,
-    /// A tenant
-    Tenant { server_index: usize, name: String },
-    /// Add new tenant action
-    AddTenant { server_index: usize },
-    /// A database
-    Database {
-        server_index: usize,
-        tenant: String,
-        name: String,
-    },
-    /// Add new database action
-    AddDatabase { server_index: usize, tenant: String },
-    /// A collection
-    Collection {
-        server_index: usize,
-        tenant: String,
-        database: String,
-        collection: Collection,
-    },
-    /// Add new collection action
-    AddCollection {
-        server_index: usize,
-        tenant: String,
-        database: String,
-    },
-    /// A document
-    Document {
-        server_index: usize,
-        tenant: String,
-        database: String,
-        collection_id: String,
-        document: Document,
-    },
-    /// Document preview
-    DocumentPreview { document: Document },
+// ── Helpers ──────────────────────────────────────────────────────────────────
+
+/// Truncate a string to at most `max_chars` characters, appending "..." if truncated.
+/// Safe for multi-byte UTF-8 characters (never slices mid-codepoint).
+fn truncate_str(s: &str, max_chars: usize) -> String {
+    match s.char_indices().nth(max_chars) {
+        Some((byte_idx, _)) => format!("{}...", &s[..byte_idx]),
+        None => s.to_string(),
+    }
 }
 
-/// Form state for adding a new server.
+// ── Constants ────────────────────────────────────────────────────────────────
+
+/// Default column widths per hierarchy level (in pixels).
+const SERVER_COLUMN_WIDTH: f32 = 220.0;
+const TENANT_COLUMN_WIDTH: f32 = 200.0;
+const DATABASE_COLUMN_WIDTH: f32 = 200.0;
+const COLLECTION_COLUMN_WIDTH: f32 = 240.0;
+const DOCUMENT_COLUMN_WIDTH: f32 = 320.0;
+
+/// Number of hierarchy levels (servers, tenants, databases, collections, documents).
+const NUM_COLUMNS: usize = 5;
+
+// ── Load status for async data ───────────────────────────────────────────────
+
+/// Loading status for each column's data.
+#[derive(Debug, Clone, Default)]
+pub enum LoadStatus {
+    #[default]
+    Idle,
+    Loading,
+    Loaded,
+    Error(String),
+}
+
+// ── Browser data types ───────────────────────────────────────────────────────
+
+/// Form state for adding/editing a server.
 #[derive(Debug, Clone, Default)]
 pub struct AddServerForm {
     pub name: String,
@@ -95,7 +91,7 @@ impl AddServerForm {
     }
 }
 
-/// Unique identifier for items that can have a menu opened.
+/// Unique identifier for items that can have a context menu.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MenuItemId {
     Server {
@@ -121,60 +117,10 @@ pub enum MenuItemId {
     },
 }
 
-/// State specific to the browser page.
-#[derive(Debug, Clone)]
-pub struct BrowserState {
-    /// The Miller columns state
-    pub miller: MillerState<BrowserData>,
-    /// Cached tenants per server (server_index -> tenant names)
-    pub tenants_cache: HashMap<usize, Vec<String>>,
-    /// Cached databases per server+tenant (key: "server_idx:tenant" -> database names)
-    pub databases_cache: HashMap<String, Vec<String>>,
-    /// Cached collections per server+tenant+database
-    pub collections_cache: HashMap<String, Vec<Collection>>,
-    /// Cached documents per collection
-    pub documents_cache: HashMap<String, Vec<Document>>,
-    /// Currently selected document for preview
-    pub selected_document: Option<Document>,
-    /// Dialog state for adding new items
-    pub dialog: Option<BrowserDialog>,
-    /// Add server form (shown inline instead of dialog)
-    pub adding_server: Option<AddServerForm>,
-    /// Edit server form (server_index, form state)
-    pub editing_server: Option<(usize, AddServerForm)>,
-    /// Scrollable ID for the browser view (for auto-scrolling)
-    pub scrollable_id: Id,
-    /// ID of the item whose menu is currently open (if any)
-    pub open_menu: Option<MenuItemId>,
-    /// Filter text for the server column
-    pub server_filter: String,
-    /// Whether the server filter input is visible
-    pub server_filter_visible: bool,
-}
-
-impl Default for BrowserState {
-    fn default() -> Self {
-        Self {
-            miller: MillerState::default(),
-            tenants_cache: HashMap::new(),
-            databases_cache: HashMap::new(),
-            collections_cache: HashMap::new(),
-            documents_cache: HashMap::new(),
-            selected_document: None,
-            dialog: None,
-            adding_server: None,
-            editing_server: None,
-            scrollable_id: Id::unique(),
-            open_menu: None,
-            server_filter: String::new(),
-            server_filter_visible: false,
-        }
-    }
-}
-
 /// Dialog types for adding new items.
 #[derive(Debug, Clone)]
 pub enum BrowserDialog {
+    #[allow(dead_code)]
     AddServer {
         name: String,
     },
@@ -193,33 +139,77 @@ pub enum BrowserDialog {
         database: String,
         name: String,
     },
-    /// Confirmation dialog when tenant doesn't exist on server
+    /// Confirmation dialog when tenant doesn't exist on server.
     ConfirmCreateTenant {
         server_index: usize,
         tenant: String,
     },
 }
 
-impl BrowserState {
-    /// Creates a new browser state with the given server configs.
-    pub fn new(servers: &[ServerConfig]) -> Self {
-        let roots = Self::build_server_items(servers);
+// ── Browser state ────────────────────────────────────────────────────────────
 
-        // Pre-populate tenants cache from config
-        let mut tenants_cache = HashMap::new();
-        for (index, config) in servers.iter().enumerate() {
-            if !config.tenants.is_empty() {
-                tenants_cache.insert(index, config.tenants.clone());
-            }
-        }
+/// State for the browser page — owns all hierarchy and UI data.
+#[derive(Debug, Clone)]
+pub struct BrowserState {
+    // Selection state: each level is `Some` when an item is selected.
+    pub selected_server: Option<usize>,
+    pub selected_tenant: Option<String>,
+    pub selected_database: Option<String>,
+    pub selected_collection: Option<String>, // collection ID
 
+    // Data caches
+    pub tenants_cache: HashMap<usize, Vec<String>>,
+    pub databases_cache: HashMap<String, Vec<String>>,
+    pub collections_cache: HashMap<String, Vec<Collection>>,
+    pub documents_cache: HashMap<String, Vec<Document>>,
+
+    // Load status per level
+    pub tenants_status: LoadStatus,
+    pub databases_status: LoadStatus,
+    pub collections_status: LoadStatus,
+    pub documents_status: LoadStatus,
+
+    /// Currently selected document for context drawer preview
+    pub selected_document: Option<Document>,
+
+    /// Column widths — one per hierarchy level, persists resize
+    pub column_widths: Vec<Option<f32>>,
+
+    /// Dialog state for adding new items
+    pub dialog: Option<BrowserDialog>,
+    /// Add server form (shown inline in the server column)
+    pub adding_server: Option<AddServerForm>,
+    /// Edit server form (server_index, form state)
+    pub editing_server: Option<(usize, AddServerForm)>,
+
+    /// Scrollable ID for the column_view
+    pub scrollable_id: Id,
+
+    /// ID of the item whose context menu is open
+    pub open_menu: Option<MenuItemId>,
+
+    /// Server column filter
+    pub server_filter: String,
+    pub server_filter_visible: bool,
+}
+
+impl Default for BrowserState {
+    fn default() -> Self {
         Self {
-            miller: MillerState::new(roots),
-            tenants_cache,
+            selected_server: None,
+            selected_tenant: None,
+            selected_database: None,
+            selected_collection: None,
+            tenants_cache: HashMap::new(),
             databases_cache: HashMap::new(),
             collections_cache: HashMap::new(),
             documents_cache: HashMap::new(),
+            tenants_status: LoadStatus::Idle,
+            databases_status: LoadStatus::Idle,
+            collections_status: LoadStatus::Idle,
+            documents_status: LoadStatus::Idle,
             selected_document: None,
+            column_widths: vec![None; NUM_COLUMNS],
             dialog: None,
             adding_server: None,
             editing_server: None,
@@ -229,8 +219,26 @@ impl BrowserState {
             server_filter_visible: false,
         }
     }
+}
 
-    /// Returns a task to scroll the browser view to the right (to show new columns).
+impl BrowserState {
+    /// Creates new browser state from server configs.
+    pub fn new(servers: &[ServerConfig]) -> Self {
+        // Pre-populate tenants cache from config
+        let mut tenants_cache = HashMap::new();
+        for (index, config) in servers.iter().enumerate() {
+            if !config.tenants.is_empty() {
+                tenants_cache.insert(index, config.tenants.clone());
+            }
+        }
+
+        Self {
+            tenants_cache,
+            ..Default::default()
+        }
+    }
+
+    /// Returns a task that scrolls the column_view to the right.
     pub fn scroll_to_end<T>(&self) -> cosmic::Task<T> {
         snap_to(
             self.scrollable_id.clone(),
@@ -238,138 +246,52 @@ impl BrowserState {
         )
     }
 
-    /// Rebuilds the root items from server configs.
-    pub fn refresh_servers(&mut self, servers: &[ServerConfig]) {
-        self.miller.set_roots(Self::build_server_items(servers));
+    /// Resets selection (called when server list changes).
+    pub fn refresh_servers(&mut self, _servers: &[ServerConfig]) {
+        self.selected_server = None;
+        self.selected_tenant = None;
+        self.selected_database = None;
+        self.selected_collection = None;
+        self.selected_document = None;
+        self.tenants_status = LoadStatus::Idle;
+        self.databases_status = LoadStatus::Idle;
+        self.collections_status = LoadStatus::Idle;
+        self.documents_status = LoadStatus::Idle;
     }
 
-    /// Builds Miller items for server configs.
-    fn build_server_items(servers: &[ServerConfig]) -> Vec<MillerItem<BrowserData>> {
-        let mut items = Vec::with_capacity(servers.len() + 1);
+    // ── Tenants ──────────────────────────────────────────────────────────
 
-        // Add server items
-        for (index, config) in servers.iter().enumerate() {
-            items.push(MillerItem::branch(
-                format!("server:{}", index),
-                &config.name,
-                BrowserData::Server {
-                    index,
-                    config: config.clone(),
-                },
-            ));
-        }
-
-        // Add "Add New Server" item
-        items.push(MillerItem::leaf(
-            "add:server",
-            "+ Add Server",
-            BrowserData::AddServer,
-        ));
-
-        items
-    }
-
-    /// Sets tenants for a server.
     pub fn set_tenants(&mut self, server_index: usize, tenants: Vec<String>) {
-        self.tenants_cache.insert(server_index, tenants.clone());
-
-        let items = Self::build_tenant_items(server_index, &tenants);
-        self.miller
-            .set_children(format!("server:{}", server_index), items);
+        self.tenants_cache.insert(server_index, tenants);
+        self.tenants_status = LoadStatus::Loaded;
     }
 
-    /// Sets loading state for tenants.
-    pub fn set_tenants_loading(&mut self, server_index: usize) {
-        self.miller.set_loading(&format!("server:{}", server_index));
+    pub fn set_tenants_loading(&mut self, _server_index: usize) {
+        self.tenants_status = LoadStatus::Loading;
     }
 
-    /// Sets error state for tenants.
-    pub fn set_tenants_error(&mut self, server_index: usize, error: String) {
-        self.miller
-            .set_error(format!("server:{}", server_index), error);
+    pub fn set_tenants_error(&mut self, _server_index: usize, error: String) {
+        self.tenants_status = LoadStatus::Error(error);
     }
 
-    /// Builds Miller items for tenants.
-    fn build_tenant_items(server_index: usize, tenants: &[String]) -> Vec<MillerItem<BrowserData>> {
-        let mut items = Vec::with_capacity(tenants.len() + 1);
+    // ── Databases ────────────────────────────────────────────────────────
 
-        for name in tenants {
-            items.push(MillerItem::branch(
-                format!("tenant:{}:{}", server_index, name),
-                name,
-                BrowserData::Tenant {
-                    server_index,
-                    name: name.clone(),
-                },
-            ));
-        }
-
-        // Add "Add New Tenant" item
-        items.push(MillerItem::leaf(
-            format!("add:tenant:{}", server_index),
-            "+ Add Tenant",
-            BrowserData::AddTenant { server_index },
-        ));
-
-        items
-    }
-
-    /// Sets databases for a tenant.
     pub fn set_databases(&mut self, server_index: usize, tenant: &str, databases: Vec<String>) {
-        let cache_key = format!("{}:{}", server_index, tenant);
-        self.databases_cache.insert(cache_key, databases.clone());
-
-        let items = Self::build_database_items(server_index, tenant, &databases);
-        self.miller
-            .set_children(format!("tenant:{}:{}", server_index, tenant), items);
+        let key = format!("{}:{}", server_index, tenant);
+        self.databases_cache.insert(key, databases);
+        self.databases_status = LoadStatus::Loaded;
     }
 
-    /// Sets loading state for databases.
-    pub fn set_databases_loading(&mut self, server_index: usize, tenant: &str) {
-        self.miller
-            .set_loading(&format!("tenant:{}:{}", server_index, tenant));
+    pub fn set_databases_loading(&mut self, _server_index: usize, _tenant: &str) {
+        self.databases_status = LoadStatus::Loading;
     }
 
-    /// Sets error state for databases.
-    pub fn set_databases_error(&mut self, server_index: usize, tenant: &str, error: String) {
-        self.miller
-            .set_error(format!("tenant:{}:{}", server_index, tenant), error);
+    pub fn set_databases_error(&mut self, _server_index: usize, _tenant: &str, error: String) {
+        self.databases_status = LoadStatus::Error(error);
     }
 
-    /// Builds Miller items for databases.
-    fn build_database_items(
-        server_index: usize,
-        tenant: &str,
-        databases: &[String],
-    ) -> Vec<MillerItem<BrowserData>> {
-        let mut items = Vec::with_capacity(databases.len() + 1);
+    // ── Collections ──────────────────────────────────────────────────────
 
-        for name in databases {
-            items.push(MillerItem::branch(
-                format!("database:{}:{}:{}", server_index, tenant, name),
-                name,
-                BrowserData::Database {
-                    server_index,
-                    tenant: tenant.to_string(),
-                    name: name.clone(),
-                },
-            ));
-        }
-
-        // Add "Add New Database" item
-        items.push(MillerItem::leaf(
-            format!("add:database:{}:{}", server_index, tenant),
-            "+ Add Database",
-            BrowserData::AddDatabase {
-                server_index,
-                tenant: tenant.to_string(),
-            },
-        ));
-
-        items
-    }
-
-    /// Sets collections for a database.
     pub fn set_collections(
         &mut self,
         server_index: usize,
@@ -377,79 +299,32 @@ impl BrowserState {
         database: &str,
         collections: Vec<Collection>,
     ) {
-        let cache_key = format!("{}:{}:{}", server_index, tenant, database);
-        self.collections_cache
-            .insert(cache_key, collections.clone());
-
-        let items = Self::build_collection_items(server_index, tenant, database, &collections);
-        self.miller.set_children(
-            format!("database:{}:{}:{}", server_index, tenant, database),
-            items,
-        );
+        let key = format!("{}:{}:{}", server_index, tenant, database);
+        self.collections_cache.insert(key, collections);
+        self.collections_status = LoadStatus::Loaded;
     }
 
-    /// Sets loading state for collections.
-    pub fn set_collections_loading(&mut self, server_index: usize, tenant: &str, database: &str) {
-        self.miller.set_loading(&format!(
-            "database:{}:{}:{}",
-            server_index, tenant, database
-        ));
+    pub fn set_collections_loading(
+        &mut self,
+        _server_index: usize,
+        _tenant: &str,
+        _database: &str,
+    ) {
+        self.collections_status = LoadStatus::Loading;
     }
 
-    /// Sets error state for collections.
     pub fn set_collections_error(
         &mut self,
-        server_index: usize,
-        tenant: &str,
-        database: &str,
+        _server_index: usize,
+        _tenant: &str,
+        _database: &str,
         error: String,
     ) {
-        self.miller.set_error(
-            format!("database:{}:{}:{}", server_index, tenant, database),
-            error,
-        );
+        self.collections_status = LoadStatus::Error(error);
     }
 
-    /// Builds Miller items for collections.
-    fn build_collection_items(
-        server_index: usize,
-        tenant: &str,
-        database: &str,
-        collections: &[Collection],
-    ) -> Vec<MillerItem<BrowserData>> {
-        let mut items = Vec::with_capacity(collections.len() + 1);
+    // ── Documents ────────────────────────────────────────────────────────
 
-        for collection in collections {
-            items.push(MillerItem::branch(
-                format!(
-                    "collection:{}:{}:{}:{}",
-                    server_index, tenant, database, collection.id
-                ),
-                &collection.name,
-                BrowserData::Collection {
-                    server_index,
-                    tenant: tenant.to_string(),
-                    database: database.to_string(),
-                    collection: collection.clone(),
-                },
-            ));
-        }
-
-        // Add "Add New Collection" item
-        items.push(MillerItem::leaf(
-            format!("add:collection:{}:{}:{}", server_index, tenant, database),
-            "+ Add Collection",
-            BrowserData::AddCollection {
-                server_index,
-                tenant: tenant.to_string(),
-                database: database.to_string(),
-            },
-        ));
-
-        items
-    }
-
-    /// Sets documents for a collection.
     pub fn set_documents(
         &mut self,
         server_index: usize,
@@ -458,119 +333,110 @@ impl BrowserState {
         collection_id: &str,
         documents: Vec<Document>,
     ) {
-        let cache_key = format!("{}:{}:{}:{}", server_index, tenant, database, collection_id);
-        self.documents_cache.insert(cache_key, documents.clone());
-
-        let items =
-            Self::build_document_items(server_index, tenant, database, collection_id, &documents);
-        self.miller.set_children(
-            format!(
-                "collection:{}:{}:{}:{}",
-                server_index, tenant, database, collection_id
-            ),
-            items,
-        );
+        let key = format!("{}:{}:{}:{}", server_index, tenant, database, collection_id);
+        self.documents_cache.insert(key, documents);
+        self.documents_status = LoadStatus::Loaded;
     }
 
-    /// Sets loading state for documents.
     pub fn set_documents_loading(
         &mut self,
-        server_index: usize,
-        tenant: &str,
-        database: &str,
-        collection_id: &str,
+        _server_index: usize,
+        _tenant: &str,
+        _database: &str,
+        _collection_id: &str,
     ) {
-        self.miller.set_loading(&format!(
-            "collection:{}:{}:{}:{}",
-            server_index, tenant, database, collection_id
-        ));
+        self.documents_status = LoadStatus::Loading;
     }
 
-    /// Sets error state for documents.
     pub fn set_documents_error(
         &mut self,
-        server_index: usize,
-        tenant: &str,
-        database: &str,
-        collection_id: &str,
+        _server_index: usize,
+        _tenant: &str,
+        _database: &str,
+        _collection_id: &str,
         error: String,
     ) {
-        self.miller.set_error(
-            format!(
-                "collection:{}:{}:{}:{}",
-                server_index, tenant, database, collection_id
-            ),
-            error,
-        );
+        self.documents_status = LoadStatus::Error(error);
     }
 
-    /// Builds Miller items for documents.
-    fn build_document_items(
-        server_index: usize,
-        tenant: &str,
-        database: &str,
-        collection_id: &str,
-        documents: &[Document],
-    ) -> Vec<MillerItem<BrowserData>> {
-        documents
-            .iter()
-            .map(|doc| {
-                // Use a truncated preview of document content as label
-                let label = doc
-                    .document
-                    .as_ref()
-                    .map(|s| {
-                        if s.len() > 40 {
-                            format!("{}...", &s[..40])
-                        } else {
-                            s.clone()
-                        }
-                    })
-                    .unwrap_or_else(|| doc.id.clone());
+    // ── Selection helpers ────────────────────────────────────────────────
 
-                MillerItem::leaf(
-                    format!(
-                        "document:{}:{}:{}:{}:{}",
-                        server_index, tenant, database, collection_id, doc.id
-                    ),
-                    label,
-                    BrowserData::Document {
-                        server_index,
-                        tenant: tenant.to_string(),
-                        database: database.to_string(),
-                        collection_id: collection_id.to_string(),
-                        document: doc.clone(),
-                    },
-                )
-            })
-            .collect()
+    /// Clear selection from a given level downward.
+    pub fn clear_selection_from_tenant(&mut self) {
+        self.selected_tenant = None;
+        self.selected_database = None;
+        self.selected_collection = None;
+        self.selected_document = None;
+        self.databases_status = LoadStatus::Idle;
+        self.collections_status = LoadStatus::Idle;
+        self.documents_status = LoadStatus::Idle;
+    }
+
+    pub fn clear_selection_from_database(&mut self) {
+        self.selected_database = None;
+        self.selected_collection = None;
+        self.selected_document = None;
+        self.collections_status = LoadStatus::Idle;
+        self.documents_status = LoadStatus::Idle;
+    }
+
+    pub fn clear_selection_from_collection(&mut self) {
+        self.selected_collection = None;
+        self.selected_document = None;
+        self.documents_status = LoadStatus::Idle;
+    }
+
+    /// Returns the number of visible columns based on selection depth.
+    #[allow(dead_code)]
+    pub fn visible_column_count(&self) -> usize {
+        let mut count = 1; // Servers always visible
+        if self.selected_server.is_some() {
+            count += 1; // Tenants
+            if self.selected_tenant.is_some() {
+                count += 1; // Databases
+                if self.selected_database.is_some() {
+                    count += 1; // Collections
+                    if self.selected_collection.is_some() {
+                        count += 1; // Documents
+                    }
+                }
+            }
+        }
+        count
     }
 }
 
-/// Messages specific to the browser.
+// ── Browser messages ─────────────────────────────────────────────────────────
+
+/// Messages specific to the browser page.
 #[derive(Debug, Clone)]
 pub enum BrowserMsg {
-    /// Miller column message
-    Miller(MillerMessage<BrowserData>),
-    /// Tenants loaded for a server
+    /// Column view resize event
+    ColumnView(ColumnViewMessage),
+
+    // Selection
+    SelectServer(usize),
+    SelectTenant(String),
+    SelectDatabase(String),
+    SelectCollection(String), // collection ID
+    SelectDocument(String),   // document ID
+
+    // Async data results
     TenantsLoaded {
         server_index: usize,
         result: Result<Vec<String>, String>,
     },
-    /// Databases loaded for a tenant
     DatabasesLoaded {
         server_index: usize,
         tenant: String,
         result: Result<Vec<String>, String>,
     },
-    /// Collections loaded for a database
     CollectionsLoaded {
         server_index: usize,
         tenant: String,
         database: String,
         result: Result<Vec<Collection>, String>,
     },
-    /// Documents loaded for a collection
     DocumentsLoaded {
         server_index: usize,
         tenant: String,
@@ -578,28 +444,26 @@ pub enum BrowserMsg {
         collection_id: String,
         result: Result<Vec<Document>, String>,
     },
-    /// Dialog input changed
+
+    // Dialog
     DialogInputChanged(String),
-    /// Dialog confirmed
     DialogConfirm,
-    /// Dialog cancelled
     DialogCancel,
-    /// Server created
+
+    // CRUD results
+    #[allow(dead_code)]
     ServerCreated,
-    /// Tenant created
     TenantCreated {
         server_index: usize,
         tenant: String,
         result: Result<(), String>,
     },
-    /// Database created
     DatabaseCreated {
         server_index: usize,
         tenant: String,
         database: String,
         result: Result<(), String>,
     },
-    /// Collection created
     CollectionCreated {
         server_index: usize,
         tenant: String,
@@ -607,52 +471,41 @@ pub enum BrowserMsg {
         result: Result<Collection, String>,
     },
 
-    // Add Server form messages
-    /// Start adding a new server (show form)
+    // Add Server form
     StartAddServer,
-    /// Cancel adding server
     CancelAddServer,
-    /// Server name changed in add form
     AddServerNameChanged(String),
-    /// Server URL changed in add form
     AddServerUrlChanged(String),
-    /// Auth token changed in add form
     AddServerAuthTokenChanged(String),
-    /// Auth header type changed in add form
     AddServerAuthHeaderTypeChanged(String),
-    /// Test connection for new server
     TestNewServerConnection,
-    /// Test connection result
     TestNewServerResult(Result<(), String>),
-    /// Save the new server
     SaveNewServer,
 
-    // Server edit/delete actions
-    /// Start editing an existing server
-    StartEditServer { index: usize },
-    /// Cancel editing server
+    // Server edit/delete
+    StartEditServer {
+        index: usize,
+    },
     CancelEditServer,
-    /// Save the edited server
     SaveEditServer,
-    /// Request to delete a server
-    RequestDeleteServer { index: usize },
+    RequestDeleteServer {
+        index: usize,
+    },
 
     // Delete actions
-    /// Request to delete a database
     RequestDeleteDatabase {
         server_index: usize,
         tenant: String,
         name: String,
     },
-    /// Request to delete a collection
     RequestDeleteCollection {
         server_index: usize,
         tenant: String,
         database: String,
         collection_id: String,
+        #[allow(dead_code)]
         collection_name: String,
     },
-    /// Request to delete a document
     RequestDeleteDocument {
         server_index: usize,
         tenant: String,
@@ -660,20 +513,17 @@ pub enum BrowserMsg {
         collection_id: String,
         document_id: String,
     },
-    /// Database deleted result
     DatabaseDeleted {
         server_index: usize,
         tenant: String,
         result: Result<(), String>,
     },
-    /// Collection deleted result
     CollectionDeleted {
         server_index: usize,
         tenant: String,
         database: String,
         result: Result<(), String>,
     },
-    /// Document deleted result
     DocumentDeleted {
         server_index: usize,
         tenant: String,
@@ -682,188 +532,98 @@ pub enum BrowserMsg {
         result: Result<(), String>,
     },
 
-    // Menu actions
-    /// Toggle menu open/close for an item
+    // Add-new actions (open dialog for adding)
+    OpenAddTenantDialog {
+        server_index: usize,
+    },
+    OpenAddDatabaseDialog {
+        server_index: usize,
+        tenant: String,
+    },
+    OpenAddCollectionDialog {
+        server_index: usize,
+        tenant: String,
+        database: String,
+    },
+
+    // Menu
     ToggleMenu(MenuItemId),
-    /// Close any open menu
     CloseMenu,
 
-    // Filter actions
-    /// Toggle the server filter input visibility
+    // Filter
     ToggleServerFilter,
-    /// Update the server filter text
     FilterServers(String),
-    /// Clear the server filter
     ClearServerFilter,
 }
 
-/// Minimum column width in pixels
-const MIN_COLUMN_WIDTH: f32 = 180.0;
-/// Maximum column width in pixels
-const MAX_COLUMN_WIDTH: f32 = 600.0;
+// ── View functions ───────────────────────────────────────────────────────────
 
-/// Calculates responsive column width based on window width.
-/// Formula: max(min_width, min(window_width / 4, max_width))
-fn calculate_column_width(window_width: f32) -> f32 {
-    let target = window_width / 1.0; // Aim for ~4 columns visible
-    target.clamp(MIN_COLUMN_WIDTH, MAX_COLUMN_WIDTH)
-}
-
-/// Renders the server column header with filter functionality.
-fn render_server_header<'a, Message: Clone + 'static>(
-    filter: &'a str,
-    filter_visible: bool,
-    on_message: impl Fn(BrowserMsg) -> Message + Copy + 'a,
-    _space_s: u16,
-    column_width: f32,
-) -> Element<'a, Message> {
-    let spacing = cosmic::theme::spacing();
-
-    if filter_visible {
-        // Show filter input with clear button
-        let input = widget::text_input("Filter servers...", filter)
-            .on_input(move |s| on_message(BrowserMsg::FilterServers(s)))
-            .width(Length::Fill)
-            .size(14);
-
-        let clear_btn = widget::button::icon(icon::from_name("edit-clear-symbolic"))
-            .extra_small()
-            .on_press(on_message(BrowserMsg::ClearServerFilter));
-
-        widget::container(
-            widget::row::with_capacity(2)
-                .push(input)
-                .push(clear_btn)
-                .spacing(4)
-                .align_y(Alignment::Center),
-        )
-        .padding([spacing.space_xxs, spacing.space_xs])
-        .width(Length::Fixed(column_width))
-        .class(cosmic::style::Container::Card)
-        .into()
-    } else {
-        // Show title with filter toggle
-        let title = widget::text::heading("Servers").width(Length::Fill);
-
-        let filter_btn = widget::button::icon(icon::from_name("system-search-symbolic"))
-            .extra_small()
-            .on_press(on_message(BrowserMsg::ToggleServerFilter));
-
-        widget::container(
-            widget::row::with_capacity(2)
-                .push(title)
-                .push(filter_btn)
-                .spacing(4)
-                .align_y(Alignment::Center),
-        )
-        .padding([spacing.space_xxs, spacing.space_xs])
-        .width(Length::Fixed(column_width))
-        .class(cosmic::style::Container::Card)
-        .into()
-    }
-}
-
-/// Renders the browser view.
+/// Main browser view — builds the column_view with one column per visible level.
 pub fn view<'a, Message: Clone + 'static>(
     state: &'a BrowserState,
+    servers: &'a [ServerConfig],
     on_message: impl Fn(BrowserMsg) -> Message + Copy + 'a,
     space_s: u16,
     _space_m: u16,
-    window_width: f32,
+    _window_width: f32,
     window_height: f32,
 ) -> Element<'a, Message> {
-    use crate::widgets::MillerColumns;
-    use cosmic::iced::widget::scrollable::{Direction, Scrollbar};
-
-    // Calculate responsive column width
-    let column_width = calculate_column_width(window_width);
-
-    // Use window height for columns (minus some padding for notifications)
     let column_height = Length::Fixed((window_height - 100.0).max(400.0));
 
-    let open_menu = &state.open_menu;
-    let adding_server = &state.adding_server;
-    let editing_server = &state.editing_server;
-    let server_filter = &state.server_filter;
-    let filter_lower = server_filter.to_lowercase();
-
-    // Create header for first (server) column
-    let header = render_server_header(
-        &state.server_filter,
-        state.server_filter_visible,
-        on_message,
-        space_s,
-        column_width,
-    );
-
-    let miller_view: Element<'a, Message> = MillerColumns::new(&state.miller, move |msg| {
-        on_message(BrowserMsg::Miller(msg))
-    })
-    .column_width(Length::Fixed(column_width))
-    .column_height(column_height)
-    .spacing(space_s)
-    .first_column_header(header)
-    .item_view(move |item, is_selected| {
-        // Filter server items based on filter text
-        // "Add Server" is always visible, servers are filtered by name
-        if !filter_lower.is_empty() {
-            match &item.data {
-                BrowserData::Server { config, .. } => {
-                    if !config.name.to_lowercase().contains(&filter_lower) {
-                        // Return an empty/hidden element for filtered out servers
-                        return widget::container(widget::Space::new(0, 0))
-                            .width(Length::Shrink)
-                            .height(Length::Shrink)
-                            .into();
-                    }
-                }
-                BrowserData::AddServer => {
-                    // Always show Add Server
-                }
-                _ => {
-                    // Non-server items are not filtered
-                }
-            }
-        }
-
-        // Check if this item should be replaced with an inline form
-        match &item.data {
-            // If we're adding a server and this is the AddServer item, show the form
-            BrowserData::AddServer if adding_server.is_some() => {
-                render_inline_server_form(
-                    adding_server.as_ref().unwrap(),
-                    None, // No index for new server
-                    on_message,
-                    space_s,
-                )
-            }
-            // If we're editing a server and this is that server, show the form
-            BrowserData::Server { index, .. }
-                if editing_server.as_ref().map(|(i, _)| i) == Some(index) =>
-            {
-                render_inline_server_form(
-                    &editing_server.as_ref().unwrap().1,
-                    Some(*index),
-                    on_message,
-                    space_s,
-                )
-            }
-            // Otherwise render normally
-            _ => render_browser_item(item, is_selected, open_menu, on_message),
-        }
-    })
-    .into();
-
-    // Wrap Miller columns in scrollable
-    let content: Element<'a, Message> = widget::scrollable(miller_view)
+    // Build the column_view
+    let mut cv = column_view(move |msg| on_message(BrowserMsg::ColumnView(msg)))
         .id(state.scrollable_id.clone())
-        .direction(Direction::Both {
-            vertical: Scrollbar::new().width(0).scroller_width(0), // Hidden
-            horizontal: Scrollbar::default(),
-        })
-        .width(Length::Fill)
-        .height(Length::Fill)
-        .into();
+        .column_width(SERVER_COLUMN_WIDTH)
+        .min_column_width(150.0)
+        .max_column_width(600.0)
+        .resizable(true)
+        .spacing(space_s as f32)
+        .height(column_height);
+
+    // Column 0: Servers (always visible)
+    let servers_col = build_servers_column(state, servers, on_message, space_s);
+    cv = push_column(cv, servers_col, 0, state, SERVER_COLUMN_WIDTH);
+
+    // Column 1: Tenants (visible when a server is selected)
+    if let Some(server_index) = state.selected_server {
+        let tenants_col = build_tenants_column(state, server_index, on_message, space_s);
+        cv = push_column(cv, tenants_col, 1, state, TENANT_COLUMN_WIDTH);
+
+        // Column 2: Databases
+        if let Some(ref tenant) = state.selected_tenant {
+            let dbs_col = build_databases_column(state, server_index, tenant, on_message, space_s);
+            cv = push_column(cv, dbs_col, 2, state, DATABASE_COLUMN_WIDTH);
+
+            // Column 3: Collections
+            if let Some(ref database) = state.selected_database {
+                let colls_col = build_collections_column(
+                    state,
+                    server_index,
+                    tenant,
+                    database,
+                    on_message,
+                    space_s,
+                );
+                cv = push_column(cv, colls_col, 3, state, COLLECTION_COLUMN_WIDTH);
+
+                // Column 4: Documents
+                if let Some(ref collection_id) = state.selected_collection {
+                    let docs_col = build_documents_column(
+                        state,
+                        server_index,
+                        tenant,
+                        database,
+                        collection_id,
+                        on_message,
+                        space_s,
+                    );
+                    cv = push_column(cv, docs_col, 4, state, DOCUMENT_COLUMN_WIDTH);
+                }
+            }
+        }
+    }
+
+    let content: Element<'a, Message> = cv.into();
 
     // Wrap in dialog if one is open
     if let Some(ref dialog) = state.dialog {
@@ -873,110 +633,577 @@ pub fn view<'a, Message: Clone + 'static>(
     }
 }
 
-/// Renders a single browser item as a card widget.
-fn render_browser_item<'a, Message: Clone + 'static>(
-    item: &MillerItem<BrowserData>,
+/// Push a column element with its persisted width (if any) or default.
+fn push_column<'a, Message: Clone + 'a>(
+    cv: cosmetics::widgets::column_view::ColumnView<'a, Message>,
+    element: Element<'a, Message>,
+    index: usize,
+    state: &BrowserState,
+    default_width: f32,
+) -> cosmetics::widgets::column_view::ColumnView<'a, Message> {
+    match state.column_widths.get(index).copied().flatten() {
+        Some(w) => cv.push_with_width(element, w),
+        None => cv.push_with_width(element, default_width),
+    }
+}
+
+// ── Column builders ──────────────────────────────────────────────────────────
+
+/// Builds the servers column.
+fn build_servers_column<'a, Message: Clone + 'static>(
+    state: &'a BrowserState,
+    servers: &'a [ServerConfig],
+    on_message: impl Fn(BrowserMsg) -> Message + Copy + 'a,
+    space_s: u16,
+) -> Element<'a, Message> {
+    let spacing = cosmic::theme::spacing();
+
+    // Header
+    let header = if state.server_filter_visible {
+        let input = widget::text_input("Filter servers...", &state.server_filter)
+            .on_input(move |s| on_message(BrowserMsg::FilterServers(s)))
+            .width(Length::Fill)
+            .size(14);
+        let clear_btn = widget::button::icon(icon::from_name("edit-clear-symbolic"))
+            .extra_small()
+            .on_press(on_message(BrowserMsg::ClearServerFilter));
+        widget::row::with_capacity(2)
+            .push(input)
+            .push(clear_btn)
+            .spacing(4)
+            .align_y(Alignment::Center)
+    } else {
+        let title = widget::text::heading("Servers").width(Length::Fill);
+        let filter_btn = widget::button::icon(icon::from_name("system-search-symbolic"))
+            .extra_small()
+            .on_press(on_message(BrowserMsg::ToggleServerFilter));
+        widget::row::with_capacity(2)
+            .push(title)
+            .push(filter_btn)
+            .spacing(4)
+            .align_y(Alignment::Center)
+    };
+
+    let header_container = widget::container(header)
+        .padding([spacing.space_xxs, spacing.space_xs])
+        .width(Length::Fill);
+
+    // Server items
+    let filter_lower = state.server_filter.to_lowercase();
+    let mut list = widget::column::with_capacity(servers.len() + 2).spacing(2);
+
+    for (index, config) in servers.iter().enumerate() {
+        // Filter
+        if !filter_lower.is_empty() && !config.name.to_lowercase().contains(&filter_lower) {
+            continue;
+        }
+
+        // If editing this server, show inline form
+        if let Some((edit_idx, ref form)) = state.editing_server {
+            if edit_idx == index {
+                list = list.push(render_inline_server_form(
+                    form,
+                    Some(index),
+                    on_message,
+                    space_s,
+                ));
+                continue;
+            }
+        }
+
+        let is_selected = state.selected_server == Some(index);
+        let select_msg = on_message(BrowserMsg::SelectServer(index));
+
+        let card = render_server_card(config, index, is_selected, &state.open_menu, on_message);
+        let card = widget::mouse_area(card)
+            .on_press(select_msg)
+            .on_right_press(on_message(BrowserMsg::ToggleMenu(MenuItemId::Server {
+                index,
+            })));
+
+        list = list.push(card);
+    }
+
+    // Add server button or inline form
+    if let Some(ref form) = state.adding_server {
+        list = list.push(render_inline_server_form(form, None, on_message, space_s));
+    } else {
+        let add_btn = widget::button::text("+ Add Server")
+            .class(cosmic::theme::Button::Standard)
+            .width(Length::Fill)
+            .on_press(on_message(BrowserMsg::StartAddServer));
+        list = list.push(add_btn);
+    }
+
+    let scrollable = widget::scrollable(list)
+        .width(Length::Fill)
+        .height(Length::Fill);
+
+    widget::column::with_capacity(2)
+        .push(header_container)
+        .push(scrollable)
+        .spacing(2)
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .into()
+}
+
+/// Builds the tenants column.
+fn build_tenants_column<'a, Message: Clone + 'static>(
+    state: &'a BrowserState,
+    server_index: usize,
+    on_message: impl Fn(BrowserMsg) -> Message + Copy + 'a,
+    _space_s: u16,
+) -> Element<'a, Message> {
+    let spacing = cosmic::theme::spacing();
+
+    // Header with add button
+    let title = widget::text::heading("Tenants").width(Length::Fill);
+    let add_btn = widget::button::icon(icon::from_name("list-add-symbolic"))
+        .extra_small()
+        .on_press(on_message(BrowserMsg::OpenAddTenantDialog { server_index }));
+    let header = widget::container(
+        widget::row::with_capacity(2)
+            .push(title)
+            .push(add_btn)
+            .spacing(4)
+            .align_y(Alignment::Center),
+    )
+    .padding([spacing.space_xxs, spacing.space_xs])
+    .width(Length::Fill);
+
+    // Content based on load status
+    let content: Element<'a, Message> = match &state.tenants_status {
+        LoadStatus::Idle => widget::text::body("Select a server").into(),
+        LoadStatus::Loading => widget::container(widget::text::body("Loading tenants..."))
+            .width(Length::Fill)
+            .center(Length::Fill)
+            .into(),
+        LoadStatus::Error(e) => widget::container(
+            widget::column::with_capacity(2)
+                .push(icon::from_name("dialog-error-symbolic").size(24))
+                .push(widget::text::caption(e.clone()).class(cosmic::style::Text::Accent))
+                .spacing(8)
+                .align_x(Alignment::Center),
+        )
+        .width(Length::Fill)
+        .center(Length::Fill)
+        .into(),
+        LoadStatus::Loaded => {
+            let tenants = state.tenants_cache.get(&server_index);
+            match tenants {
+                Some(tenants) if !tenants.is_empty() => {
+                    let mut list = widget::column::with_capacity(tenants.len()).spacing(2);
+                    for name in tenants {
+                        let is_selected = state.selected_tenant.as_deref() == Some(name.as_str());
+                        let select_msg = on_message(BrowserMsg::SelectTenant(name.clone()));
+                        let card = render_tenant_card(name, is_selected);
+                        let card = widget::mouse_area(card).on_press(select_msg);
+                        list = list.push(card);
+                    }
+                    widget::scrollable(list)
+                        .width(Length::Fill)
+                        .height(Length::Fill)
+                        .into()
+                }
+                _ => widget::text::body("No tenants found").into(),
+            }
+        }
+    };
+
+    widget::column::with_capacity(2)
+        .push(header)
+        .push(content)
+        .spacing(2)
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .into()
+}
+
+/// Builds the databases column.
+fn build_databases_column<'a, Message: Clone + 'static>(
+    state: &'a BrowserState,
+    server_index: usize,
+    tenant: &str,
+    on_message: impl Fn(BrowserMsg) -> Message + Copy + 'a,
+    _space_s: u16,
+) -> Element<'a, Message> {
+    let spacing = cosmic::theme::spacing();
+    let tenant_owned = tenant.to_string();
+
+    // Header with add button
+    let title = widget::text::heading("Databases").width(Length::Fill);
+    let add_btn = widget::button::icon(icon::from_name("list-add-symbolic"))
+        .extra_small()
+        .on_press(on_message(BrowserMsg::OpenAddDatabaseDialog {
+            server_index,
+            tenant: tenant_owned.clone(),
+        }));
+    let header = widget::container(
+        widget::row::with_capacity(2)
+            .push(title)
+            .push(add_btn)
+            .spacing(4)
+            .align_y(Alignment::Center),
+    )
+    .padding([spacing.space_xxs, spacing.space_xs])
+    .width(Length::Fill);
+
+    let cache_key = format!("{}:{}", server_index, tenant);
+
+    let content: Element<'a, Message> = match &state.databases_status {
+        LoadStatus::Idle => widget::text::body("Select a tenant").into(),
+        LoadStatus::Loading => widget::container(widget::text::body("Loading databases..."))
+            .width(Length::Fill)
+            .center(Length::Fill)
+            .into(),
+        LoadStatus::Error(e) => widget::container(
+            widget::column::with_capacity(2)
+                .push(icon::from_name("dialog-error-symbolic").size(24))
+                .push(widget::text::caption(e.clone()).class(cosmic::style::Text::Accent))
+                .spacing(8)
+                .align_x(Alignment::Center),
+        )
+        .width(Length::Fill)
+        .center(Length::Fill)
+        .into(),
+        LoadStatus::Loaded => {
+            let databases = state.databases_cache.get(&cache_key);
+            match databases {
+                Some(databases) if !databases.is_empty() => {
+                    let mut list = widget::column::with_capacity(databases.len()).spacing(2);
+                    for name in databases {
+                        let is_selected = state.selected_database.as_deref() == Some(name.as_str());
+                        let select_msg = on_message(BrowserMsg::SelectDatabase(name.clone()));
+                        let card = render_database_card(
+                            name,
+                            is_selected,
+                            server_index,
+                            tenant_owned.clone(),
+                            &state.open_menu,
+                            on_message,
+                        );
+                        let tenant_for_menu = tenant_owned.clone();
+                        let name_for_menu = name.clone();
+                        let card = widget::mouse_area(card)
+                            .on_press(select_msg)
+                            .on_right_press(on_message(BrowserMsg::ToggleMenu(
+                                MenuItemId::Database {
+                                    server_index,
+                                    tenant: tenant_for_menu,
+                                    name: name_for_menu,
+                                },
+                            )));
+                        list = list.push(card);
+                    }
+                    widget::scrollable(list)
+                        .width(Length::Fill)
+                        .height(Length::Fill)
+                        .into()
+                }
+                _ => widget::text::body("No databases found").into(),
+            }
+        }
+    };
+
+    widget::column::with_capacity(2)
+        .push(header)
+        .push(content)
+        .spacing(2)
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .into()
+}
+
+/// Builds the collections column.
+fn build_collections_column<'a, Message: Clone + 'static>(
+    state: &'a BrowserState,
+    server_index: usize,
+    tenant: &str,
+    database: &str,
+    on_message: impl Fn(BrowserMsg) -> Message + Copy + 'a,
+    _space_s: u16,
+) -> Element<'a, Message> {
+    let spacing = cosmic::theme::spacing();
+    let tenant_owned = tenant.to_string();
+    let database_owned = database.to_string();
+
+    // Header with add button
+    let title = widget::text::heading("Collections").width(Length::Fill);
+    let add_btn = widget::button::icon(icon::from_name("list-add-symbolic"))
+        .extra_small()
+        .on_press(on_message(BrowserMsg::OpenAddCollectionDialog {
+            server_index,
+            tenant: tenant_owned.clone(),
+            database: database_owned.clone(),
+        }));
+    let header = widget::container(
+        widget::row::with_capacity(2)
+            .push(title)
+            .push(add_btn)
+            .spacing(4)
+            .align_y(Alignment::Center),
+    )
+    .padding([spacing.space_xxs, spacing.space_xs])
+    .width(Length::Fill);
+
+    let cache_key = format!("{}:{}:{}", server_index, tenant, database);
+
+    let content: Element<'a, Message> = match &state.collections_status {
+        LoadStatus::Idle => widget::text::body("Select a database").into(),
+        LoadStatus::Loading => widget::container(widget::text::body("Loading collections..."))
+            .width(Length::Fill)
+            .center(Length::Fill)
+            .into(),
+        LoadStatus::Error(e) => widget::container(
+            widget::column::with_capacity(2)
+                .push(icon::from_name("dialog-error-symbolic").size(24))
+                .push(widget::text::caption(e.clone()).class(cosmic::style::Text::Accent))
+                .spacing(8)
+                .align_x(Alignment::Center),
+        )
+        .width(Length::Fill)
+        .center(Length::Fill)
+        .into(),
+        LoadStatus::Loaded => {
+            let collections = state.collections_cache.get(&cache_key);
+            match collections {
+                Some(collections) if !collections.is_empty() => {
+                    let mut list = widget::column::with_capacity(collections.len()).spacing(2);
+                    for collection in collections {
+                        let is_selected =
+                            state.selected_collection.as_deref() == Some(collection.id.as_str());
+                        let select_msg =
+                            on_message(BrowserMsg::SelectCollection(collection.id.clone()));
+                        let card = render_collection_card(
+                            collection,
+                            is_selected,
+                            server_index,
+                            tenant_owned.clone(),
+                            database_owned.clone(),
+                            &state.open_menu,
+                            on_message,
+                        );
+                        let tenant_for_menu = tenant_owned.clone();
+                        let db_for_menu = database_owned.clone();
+                        let coll_id = collection.id.clone();
+                        let card = widget::mouse_area(card)
+                            .on_press(select_msg)
+                            .on_right_press(on_message(BrowserMsg::ToggleMenu(
+                                MenuItemId::Collection {
+                                    server_index,
+                                    tenant: tenant_for_menu,
+                                    database: db_for_menu,
+                                    collection_id: coll_id,
+                                },
+                            )));
+                        list = list.push(card);
+                    }
+                    widget::scrollable(list)
+                        .width(Length::Fill)
+                        .height(Length::Fill)
+                        .into()
+                }
+                _ => widget::text::body("No collections found").into(),
+            }
+        }
+    };
+
+    widget::column::with_capacity(2)
+        .push(header)
+        .push(content)
+        .spacing(2)
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .into()
+}
+
+/// Builds the documents column.
+fn build_documents_column<'a, Message: Clone + 'static>(
+    state: &'a BrowserState,
+    server_index: usize,
+    tenant: &str,
+    database: &str,
+    collection_id: &str,
+    on_message: impl Fn(BrowserMsg) -> Message + Copy + 'a,
+    _space_s: u16,
+) -> Element<'a, Message> {
+    let spacing = cosmic::theme::spacing();
+    let tenant_owned = tenant.to_string();
+    let database_owned = database.to_string();
+    let collection_id_owned = collection_id.to_string();
+
+    // Header
+    let title = widget::text::heading("Documents").width(Length::Fill);
+    let header = widget::container(
+        widget::row::with_capacity(1)
+            .push(title)
+            .align_y(Alignment::Center),
+    )
+    .padding([spacing.space_xxs, spacing.space_xs])
+    .width(Length::Fill);
+
+    let cache_key = format!("{}:{}:{}:{}", server_index, tenant, database, collection_id);
+
+    let content: Element<'a, Message> = match &state.documents_status {
+        LoadStatus::Idle => widget::text::body("Select a collection").into(),
+        LoadStatus::Loading => widget::container(widget::text::body("Loading documents..."))
+            .width(Length::Fill)
+            .center(Length::Fill)
+            .into(),
+        LoadStatus::Error(e) => widget::container(
+            widget::column::with_capacity(2)
+                .push(icon::from_name("dialog-error-symbolic").size(24))
+                .push(widget::text::caption(e.clone()).class(cosmic::style::Text::Accent))
+                .spacing(8)
+                .align_x(Alignment::Center),
+        )
+        .width(Length::Fill)
+        .center(Length::Fill)
+        .into(),
+        LoadStatus::Loaded => {
+            let documents = state.documents_cache.get(&cache_key);
+            match documents {
+                Some(documents) if !documents.is_empty() => {
+                    let mut list = widget::column::with_capacity(documents.len()).spacing(2);
+                    for doc in documents {
+                        let is_selected = state
+                            .selected_document
+                            .as_ref()
+                            .map(|d| d.id == doc.id)
+                            .unwrap_or(false);
+                        let select_msg = on_message(BrowserMsg::SelectDocument(doc.id.clone()));
+                        let card = render_document_card(
+                            doc,
+                            is_selected,
+                            server_index,
+                            tenant_owned.clone(),
+                            database_owned.clone(),
+                            collection_id_owned.clone(),
+                            &state.open_menu,
+                            on_message,
+                        );
+                        let tenant_for_menu = tenant_owned.clone();
+                        let db_for_menu = database_owned.clone();
+                        let coll_for_menu = collection_id_owned.clone();
+                        let doc_id = doc.id.clone();
+                        let card = widget::mouse_area(card)
+                            .on_press(select_msg)
+                            .on_right_press(on_message(BrowserMsg::ToggleMenu(
+                                MenuItemId::Document {
+                                    server_index,
+                                    tenant: tenant_for_menu,
+                                    database: db_for_menu,
+                                    collection_id: coll_for_menu,
+                                    document_id: doc_id,
+                                },
+                            )));
+                        list = list.push(card);
+                    }
+                    widget::scrollable(list)
+                        .width(Length::Fill)
+                        .height(Length::Fill)
+                        .into()
+                }
+                Some(_) => widget::text::body("No documents found").into(),
+                None => widget::text::body("No documents found").into(),
+            }
+        }
+    };
+
+    widget::column::with_capacity(2)
+        .push(header)
+        .push(content)
+        .spacing(2)
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .into()
+}
+
+// ── Card renderers ───────────────────────────────────────────────────────────
+
+/// Renders a server card.
+fn render_server_card<'a, Message: Clone + 'static>(
+    config: &ServerConfig,
+    index: usize,
     is_selected: bool,
     open_menu: &Option<MenuItemId>,
     on_message: impl Fn(BrowserMsg) -> Message + Copy + 'a,
 ) -> Element<'a, Message> {
-    match &item.data {
-        // Documents get a detailed card view
-        BrowserData::Document {
-            server_index,
-            tenant,
-            database,
-            collection_id,
-            document,
-        } => render_document_card(
-            document,
-            is_selected,
-            *server_index,
-            tenant.clone(),
-            database.clone(),
-            collection_id.clone(),
-            open_menu,
-            on_message,
-        ),
+    let name = config.name.clone();
+    let url = config.server_url.clone();
 
-        // Collections get a card view with delete button
-        BrowserData::Collection {
-            server_index,
-            tenant,
-            database,
-            collection,
-        } => render_collection_card(
-            collection,
-            is_selected,
-            *server_index,
-            tenant.clone(),
-            database.clone(),
-            open_menu,
-            on_message,
-        ),
+    let menu_id = MenuItemId::Server { index };
+    let is_menu_open = open_menu.as_ref() == Some(&menu_id);
 
-        // Databases get a card view with delete button
-        BrowserData::Database {
-            server_index,
-            tenant,
-            name,
-        } => render_database_card(
-            name,
-            is_selected,
-            *server_index,
-            tenant.clone(),
-            open_menu,
-            on_message,
-        ),
+    // Context menu content
+    let menu_content: Element<'a, Message> = widget::container(
+        widget::column::with_capacity(2)
+            .push(
+                widget::button::text("Edit")
+                    .on_press(on_message(BrowserMsg::StartEditServer { index }))
+                    .width(Length::Fill),
+            )
+            .push(
+                widget::button::destructive("Delete")
+                    .on_press(on_message(BrowserMsg::RequestDeleteServer { index }))
+                    .width(Length::Fill),
+            )
+            .spacing(4),
+    )
+    .padding(4)
+    .width(Length::Fixed(120.0))
+    .class(cosmic::style::Container::Card)
+    .into();
 
-        // Servers get a card view with kebab menu
-        BrowserData::Server { index, config } => {
-            render_server_card(config, *index, is_selected, open_menu, on_message)
-        }
-
-        // Other items use simple rendering
-        _ => render_simple_item(item, is_selected),
-    }
-}
-
-/// Renders a simple item (servers, tenants, add buttons).
-fn render_simple_item<'a, Message: 'static>(
-    item: &MillerItem<BrowserData>,
-    is_selected: bool,
-) -> Element<'a, Message> {
-    let (icon_name, label_style) = match &item.data {
-        BrowserData::Server { .. } => ("network-server-symbolic", false),
-        BrowserData::AddServer => ("list-add-symbolic", true),
-        BrowserData::Tenant { .. } => ("system-users-symbolic", false),
-        BrowserData::AddTenant { .. } => ("list-add-symbolic", true),
-        BrowserData::Database { .. } => ("drive-harddisk-symbolic", false),
-        BrowserData::AddDatabase { .. } => ("list-add-symbolic", true),
-        BrowserData::Collection { .. } => ("folder-symbolic", false),
-        BrowserData::AddCollection { .. } => ("list-add-symbolic", true),
-        BrowserData::Document { .. } => ("text-x-generic-symbolic", false),
-        BrowserData::DocumentPreview { .. } => ("text-x-generic-symbolic", false),
-    };
-
-    let has_children = item.item_type == MillerItemType::Branch;
-
-    let label = item.label.clone();
-    let mut row = widget::row::with_capacity(3)
-        .push(icon::from_name(icon_name).size(16))
+    let card_content = widget::row::with_capacity(3)
+        .push(icon::from_name("network-server-symbolic").size(16))
         .push(
-            widget::text::body(label)
-                .width(Length::Fill)
-                .class(if label_style {
-                    cosmic::style::Text::Accent
-                } else {
-                    cosmic::style::Text::Default
-                }),
+            widget::column::with_capacity(2)
+                .push(widget::text::body(name).class(cosmic::style::Text::Default))
+                .push(widget::text::caption(url).class(cosmic::style::Text::Accent))
+                .spacing(2)
+                .width(Length::Fill),
         )
+        .push(icon::from_name("go-next-symbolic").size(12))
         .align_y(Alignment::Center)
         .spacing(8);
 
-    if has_children {
-        row = row.push(icon::from_name("go-next-symbolic").size(12));
+    let container_class = if is_selected {
+        cosmic::style::Container::Primary
+    } else {
+        cosmic::style::Container::default()
+    };
+
+    let card: Element<'a, Message> = widget::container(card_content)
+        .padding(10)
+        .width(Length::Fill)
+        .class(container_class)
+        .into();
+
+    if is_menu_open {
+        popover(card)
+            .popup(menu_content)
+            .position(popover::Position::Bottom)
+            .on_close(on_message(BrowserMsg::CloseMenu))
+            .into()
+    } else {
+        card
     }
+}
+
+/// Renders a tenant card.
+fn render_tenant_card<'a, Message: 'static>(name: &str, is_selected: bool) -> Element<'a, Message> {
+    let row = widget::row::with_capacity(3)
+        .push(icon::from_name("system-users-symbolic").size(16))
+        .push(
+            widget::text::body(name.to_string())
+                .width(Length::Fill)
+                .class(cosmic::style::Text::Default),
+        )
+        .push(icon::from_name("go-next-symbolic").size(12))
+        .align_y(Alignment::Center)
+        .spacing(8);
 
     let container_class = if is_selected {
         cosmic::style::Container::Primary
@@ -991,7 +1218,157 @@ fn render_simple_item<'a, Message: 'static>(
         .into()
 }
 
-/// Renders a document as a card with details and kebab menu for actions.
+/// Renders a database card with context menu.
+fn render_database_card<'a, Message: Clone + 'static>(
+    name: &str,
+    is_selected: bool,
+    server_index: usize,
+    tenant: String,
+    open_menu: &Option<MenuItemId>,
+    on_message: impl Fn(BrowserMsg) -> Message + Copy + 'a,
+) -> Element<'a, Message> {
+    let db_name = name.to_string();
+    let menu_id = MenuItemId::Database {
+        server_index,
+        tenant: tenant.clone(),
+        name: db_name.clone(),
+    };
+    let is_menu_open = open_menu.as_ref() == Some(&menu_id);
+
+    let menu_content: Element<'a, Message> = widget::container(
+        widget::button::destructive("Delete")
+            .on_press(on_message(BrowserMsg::RequestDeleteDatabase {
+                server_index,
+                tenant,
+                name: db_name.clone(),
+            }))
+            .width(Length::Fill),
+    )
+    .padding(4)
+    .width(Length::Fixed(120.0))
+    .class(cosmic::style::Container::Card)
+    .into();
+
+    let row = widget::row::with_capacity(3)
+        .push(icon::from_name("drive-harddisk-symbolic").size(16))
+        .push(
+            widget::text::body(db_name)
+                .width(Length::Fill)
+                .class(cosmic::style::Text::Default),
+        )
+        .push(icon::from_name("go-next-symbolic").size(12))
+        .align_y(Alignment::Center)
+        .spacing(8);
+
+    let container_class = if is_selected {
+        cosmic::style::Container::Primary
+    } else {
+        cosmic::style::Container::default()
+    };
+
+    let card: Element<'a, Message> = widget::container(row)
+        .padding([6, 10])
+        .width(Length::Fill)
+        .class(container_class)
+        .into();
+
+    if is_menu_open {
+        popover(card)
+            .popup(menu_content)
+            .position(popover::Position::Bottom)
+            .on_close(on_message(BrowserMsg::CloseMenu))
+            .into()
+    } else {
+        card
+    }
+}
+
+/// Renders a collection card with context menu.
+fn render_collection_card<'a, Message: Clone + 'static>(
+    collection: &Collection,
+    is_selected: bool,
+    server_index: usize,
+    tenant: String,
+    database: String,
+    open_menu: &Option<MenuItemId>,
+    on_message: impl Fn(BrowserMsg) -> Message + Copy + 'a,
+) -> Element<'a, Message> {
+    let collection_id = collection.id.clone();
+    let collection_name = collection.name.clone();
+
+    let menu_id = MenuItemId::Collection {
+        server_index,
+        tenant: tenant.clone(),
+        database: database.clone(),
+        collection_id: collection_id.clone(),
+    };
+    let is_menu_open = open_menu.as_ref() == Some(&menu_id);
+
+    let menu_content: Element<'a, Message> = widget::container(
+        widget::button::destructive("Delete")
+            .on_press(on_message(BrowserMsg::RequestDeleteCollection {
+                server_index,
+                tenant,
+                database,
+                collection_id,
+                collection_name: collection_name.clone(),
+            }))
+            .width(Length::Fill),
+    )
+    .padding(4)
+    .width(Length::Fixed(120.0))
+    .class(cosmic::style::Container::Card)
+    .into();
+
+    let metadata_count = collection.metadata.as_ref().map(|m| m.len()).unwrap_or(0);
+
+    let header_row = widget::row::with_capacity(3)
+        .push(icon::from_name("folder-symbolic").size(16))
+        .push(
+            widget::text::body(collection_name)
+                .width(Length::Fill)
+                .class(cosmic::style::Text::Default),
+        )
+        .push(icon::from_name("go-next-symbolic").size(12))
+        .align_y(Alignment::Center)
+        .spacing(8);
+
+    let metadata_info = if metadata_count > 0 {
+        widget::text::caption(format!("{} metadata fields", metadata_count))
+    } else {
+        widget::text::caption("No metadata")
+    }
+    .class(cosmic::style::Text::Accent);
+
+    let card_content = widget::column::with_capacity(2)
+        .push(header_row)
+        .push(metadata_info)
+        .spacing(4);
+
+    let container_class = if is_selected {
+        cosmic::style::Container::Primary
+    } else {
+        cosmic::style::Container::default()
+    };
+
+    let card: Element<'a, Message> = widget::container(card_content)
+        .padding(10)
+        .width(Length::Fill)
+        .class(container_class)
+        .into();
+
+    if is_menu_open {
+        popover(card)
+            .popup(menu_content)
+            .position(popover::Position::Bottom)
+            .on_close(on_message(BrowserMsg::CloseMenu))
+            .into()
+    } else {
+        card
+    }
+}
+
+/// Renders a document card with context menu.
 fn render_document_card<'a, Message: Clone + 'static>(
     doc: &Document,
     is_selected: bool,
@@ -1003,52 +1380,25 @@ fn render_document_card<'a, Message: Clone + 'static>(
     on_message: impl Fn(BrowserMsg) -> Message + Copy + 'a,
 ) -> Element<'a, Message> {
     let doc_id = doc.id.clone();
-    let doc_id_display = doc_id.clone();
-    let doc_id_for_delete = doc_id.clone();
 
-    // Create menu item ID for this document
     let menu_id = MenuItemId::Document {
         server_index,
         tenant: tenant.clone(),
         database: database.clone(),
         collection_id: collection_id.clone(),
-        document_id: doc_id,
+        document_id: doc_id.clone(),
     };
     let is_menu_open = open_menu.as_ref() == Some(&menu_id);
 
-    // Document content preview (truncated)
-    let content_preview = doc
-        .document
-        .as_ref()
-        .map(|s| {
-            if s.len() > 80 {
-                format!("{}...", &s[..80])
-            } else {
-                s.clone()
-            }
-        })
-        .unwrap_or_else(|| "[No content]".to_string());
-
-    // Metadata count
-    let metadata_count = doc.metadata.as_ref().map(|m| m.len()).unwrap_or(0);
-
-    // Kebab menu button
-    let menu_button = widget::button::icon(icon::from_name("view-more-symbolic"))
-        .class(cosmic::theme::Button::Icon)
-        .padding(4)
-        .on_press(on_message(BrowserMsg::ToggleMenu(menu_id.clone())));
-
-    // Popover content (delete menu)
-    let delete_msg = on_message(BrowserMsg::RequestDeleteDocument {
-        server_index,
-        tenant: tenant.clone(),
-        database: database.clone(),
-        collection_id: collection_id.clone(),
-        document_id: doc_id_for_delete,
-    });
     let menu_content: Element<'a, Message> = widget::container(
         widget::button::destructive("Delete")
-            .on_press(delete_msg)
+            .on_press(on_message(BrowserMsg::RequestDeleteDocument {
+                server_index,
+                tenant,
+                database,
+                collection_id,
+                document_id: doc_id.clone(),
+            }))
             .width(Length::Fill),
     )
     .padding(4)
@@ -1056,322 +1406,64 @@ fn render_document_card<'a, Message: Clone + 'static>(
     .class(cosmic::style::Container::Card)
     .into();
 
-    // Wrap menu button in popover if menu is open
-    let menu_widget: Element<'a, Message> = if is_menu_open {
-        popover(menu_button)
-            .popup(menu_content)
-            .position(popover::Position::Bottom)
-            .on_close(on_message(BrowserMsg::CloseMenu))
-            .into()
-    } else {
-        menu_button.into()
-    };
+    // Content preview
+    let content_preview = doc
+        .document
+        .as_ref()
+        .map(|s| truncate_str(s, 80))
+        .unwrap_or_else(|| "[No content]".to_string());
 
-    // Header row with ID and menu button
-    let header = widget::row::with_capacity(3)
+    let metadata_count = doc.metadata.as_ref().map(|m| m.len()).unwrap_or(0);
+
+    let header_row = widget::row::with_capacity(2)
         .push(icon::from_name("text-x-generic-symbolic").size(16))
         .push(
-            widget::text::body(doc_id_display)
+            widget::text::body(doc_id)
                 .width(Length::Fill)
                 .class(cosmic::style::Text::Default),
         )
-        .push(menu_widget)
         .align_y(Alignment::Center)
         .spacing(8);
 
-    // Content preview
-    let content = widget::text::caption(content_preview).class(cosmic::style::Text::Default);
-
-    // Metadata info
+    let content_text = widget::text::caption(content_preview).class(cosmic::style::Text::Default);
     let metadata_info = widget::text::caption(format!("{} metadata fields", metadata_count))
         .class(cosmic::style::Text::Accent);
 
     let card_content = widget::column::with_capacity(3)
-        .push(header)
-        .push(content)
+        .push(header_row)
+        .push(content_text)
         .push(metadata_info)
         .spacing(4);
 
     let container_class = if is_selected {
         cosmic::style::Container::Primary
     } else {
-        cosmic::style::Container::Card
+        cosmic::style::Container::default()
     };
 
-    widget::container(card_content)
+    let card: Element<'a, Message> = widget::container(card_content)
         .padding(10)
         .width(Length::Fill)
         .class(container_class)
-        .into()
-}
+        .into();
 
-/// Renders a collection as a card with kebab menu for actions.
-fn render_collection_card<'a, Message: Clone + 'static>(
-    collection: &Collection,
-    is_selected: bool,
-    server_index: usize,
-    tenant: String,
-    database: String,
-    open_menu: &Option<MenuItemId>,
-    on_message: impl Fn(BrowserMsg) -> Message + Copy + 'a,
-) -> Element<'a, Message> {
-    let collection_id = collection.id.clone();
-    let collection_id_for_delete = collection_id.clone();
-    let collection_name = collection.name.clone();
-    let collection_name_display = collection_name.clone();
-    let collection_name_for_delete = collection_name.clone();
-
-    // Create menu item ID for this collection
-    let menu_id = MenuItemId::Collection {
-        server_index,
-        tenant: tenant.clone(),
-        database: database.clone(),
-        collection_id,
-    };
-    let is_menu_open = open_menu.as_ref() == Some(&menu_id);
-
-    // Kebab menu button
-    let menu_button = widget::button::icon(icon::from_name("view-more-symbolic"))
-        .class(cosmic::theme::Button::Icon)
-        .padding(4)
-        .on_press(on_message(BrowserMsg::ToggleMenu(menu_id.clone())));
-
-    // Popover content (delete menu)
-    let delete_msg = on_message(BrowserMsg::RequestDeleteCollection {
-        server_index,
-        tenant: tenant.clone(),
-        database: database.clone(),
-        collection_id: collection_id_for_delete,
-        collection_name: collection_name_for_delete,
-    });
-    let menu_content: Element<'a, Message> = widget::container(
-        widget::button::destructive("Delete")
-            .on_press(delete_msg)
-            .width(Length::Fill),
-    )
-    .padding(4)
-    .width(Length::Fixed(120.0))
-    .class(cosmic::style::Container::Card)
-    .into();
-
-    // Wrap menu button in popover if menu is open
-    let menu_widget: Element<'a, Message> = if is_menu_open {
-        popover(menu_button)
+    if is_menu_open {
+        popover(card)
             .popup(menu_content)
             .position(popover::Position::Bottom)
             .on_close(on_message(BrowserMsg::CloseMenu))
             .into()
     } else {
-        menu_button.into()
-    };
-
-    // Header row with name, chevron, and menu button
-    let header = widget::row::with_capacity(4)
-        .push(icon::from_name("folder-symbolic").size(16))
-        .push(
-            widget::text::body(collection_name_display)
-                .width(Length::Fill)
-                .class(cosmic::style::Text::Default),
-        )
-        .push(icon::from_name("go-next-symbolic").size(12))
-        .push(menu_widget)
-        .align_y(Alignment::Center)
-        .spacing(8);
-
-    // Collection metadata count
-    let metadata_count = collection.metadata.as_ref().map(|m| m.len()).unwrap_or(0);
-    let metadata_info = if metadata_count > 0 {
-        widget::text::caption(format!("{} metadata fields", metadata_count))
-    } else {
-        widget::text::caption("No metadata")
+        card
     }
-    .class(cosmic::style::Text::Accent);
-
-    let card_content = widget::column::with_capacity(2)
-        .push(header)
-        .push(metadata_info)
-        .spacing(4);
-
-    let container_class = if is_selected {
-        cosmic::style::Container::Primary
-    } else {
-        cosmic::style::Container::Card
-    };
-
-    widget::container(card_content)
-        .padding(10)
-        .width(Length::Fill)
-        .class(container_class)
-        .into()
 }
 
-/// Renders a database as a card with kebab menu for actions.
-fn render_database_card<'a, Message: Clone + 'static>(
-    name: &str,
-    is_selected: bool,
-    server_index: usize,
-    tenant: String,
-    open_menu: &Option<MenuItemId>,
-    on_message: impl Fn(BrowserMsg) -> Message + Copy + 'a,
-) -> Element<'a, Message> {
-    let db_name = name.to_string();
-    let db_name_display = db_name.clone();
-    let db_name_for_delete = db_name.clone();
-
-    // Create menu item ID for this database
-    let menu_id = MenuItemId::Database {
-        server_index,
-        tenant: tenant.clone(),
-        name: db_name,
-    };
-    let is_menu_open = open_menu.as_ref() == Some(&menu_id);
-
-    // Kebab menu button
-    let menu_button = widget::button::icon(icon::from_name("view-more-symbolic"))
-        .class(cosmic::theme::Button::Icon)
-        .padding(4)
-        .on_press(on_message(BrowserMsg::ToggleMenu(menu_id.clone())));
-
-    // Popover content (delete menu)
-    let delete_msg = on_message(BrowserMsg::RequestDeleteDatabase {
-        server_index,
-        tenant: tenant.clone(),
-        name: db_name_for_delete,
-    });
-    let menu_content: Element<'a, Message> = widget::container(
-        widget::button::destructive("Delete")
-            .on_press(delete_msg)
-            .width(Length::Fill),
-    )
-    .padding(4)
-    .width(Length::Fixed(120.0))
-    .class(cosmic::style::Container::Card)
-    .into();
-
-    // Wrap menu button in popover if menu is open
-    let menu_widget: Element<'a, Message> = if is_menu_open {
-        popover(menu_button)
-            .popup(menu_content)
-            .position(popover::Position::Bottom)
-            .on_close(on_message(BrowserMsg::CloseMenu))
-            .into()
-    } else {
-        menu_button.into()
-    };
-
-    // Header row with name, chevron, and menu button
-    let header = widget::row::with_capacity(4)
-        .push(icon::from_name("drive-harddisk-symbolic").size(16))
-        .push(
-            widget::text::body(db_name_display)
-                .width(Length::Fill)
-                .class(cosmic::style::Text::Default),
-        )
-        .push(icon::from_name("go-next-symbolic").size(12))
-        .push(menu_widget)
-        .align_y(Alignment::Center)
-        .spacing(8);
-
-    let container_class = if is_selected {
-        cosmic::style::Container::Primary
-    } else {
-        cosmic::style::Container::Card
-    };
-
-    widget::container(header)
-        .padding(10)
-        .width(Length::Fill)
-        .class(container_class)
-        .into()
-}
-
-/// Renders a server config as a card with kebab menu for edit/delete.
-fn render_server_card<'a, Message: Clone + 'static>(
-    config: &ServerConfig,
-    index: usize,
-    is_selected: bool,
-    open_menu: &Option<MenuItemId>,
-    on_message: impl Fn(BrowserMsg) -> Message + Copy + 'a,
-) -> Element<'a, Message> {
-    // Clone values we need for the view to avoid lifetime issues
-    let name = config.name.clone();
-    let url = config.server_url.clone();
-
-    // Create menu item ID for this server
-    let menu_id = MenuItemId::Server { index };
-    let is_menu_open = open_menu.as_ref() == Some(&menu_id);
-
-    // Kebab menu button
-    let menu_button = widget::button::icon(icon::from_name("view-more-symbolic"))
-        .class(cosmic::theme::Button::Icon)
-        .padding(4)
-        .on_press(on_message(BrowserMsg::ToggleMenu(menu_id.clone())));
-
-    // Popover content (edit and delete menu)
-    let edit_msg = on_message(BrowserMsg::StartEditServer { index });
-    let delete_msg = on_message(BrowserMsg::RequestDeleteServer { index });
-    let menu_content: Element<'a, Message> = widget::container(
-        widget::column::with_capacity(2)
-            .push(
-                widget::button::text("Edit")
-                    .on_press(edit_msg)
-                    .width(Length::Fill),
-            )
-            .push(
-                widget::button::destructive("Delete")
-                    .on_press(delete_msg)
-                    .width(Length::Fill),
-            )
-            .spacing(4),
-    )
-    .padding(4)
-    .width(Length::Fixed(120.0))
-    .class(cosmic::style::Container::Card)
-    .into();
-
-    // Wrap menu button in popover if menu is open
-    let menu_widget: Element<'a, Message> = if is_menu_open {
-        popover(menu_button)
-            .popup(menu_content)
-            .position(popover::Position::Bottom)
-            .on_close(on_message(BrowserMsg::CloseMenu))
-            .into()
-    } else {
-        menu_button.into()
-    };
-
-    // Header row with icon, name, chevron, and menu button
-    let header = widget::row::with_capacity(4)
-        .push(icon::from_name("network-server-symbolic").size(16))
-        .push(
-            widget::column::with_capacity(2)
-                .push(widget::text::body(name).class(cosmic::style::Text::Default))
-                .push(widget::text::caption(url).class(cosmic::style::Text::Accent))
-                .spacing(2)
-                .width(Length::Fill),
-        )
-        .push(icon::from_name("go-next-symbolic").size(12))
-        .push(menu_widget)
-        .align_y(Alignment::Center)
-        .spacing(8);
-
-    let container_class = if is_selected {
-        cosmic::style::Container::Primary
-    } else {
-        cosmic::style::Container::Card
-    };
-
-    widget::container(header)
-        .padding(10)
-        .width(Length::Fill)
-        .class(container_class)
-        .into()
-}
+// ── Inline forms and dialogs ─────────────────────────────────────────────────
 
 /// Renders an inline server form for add/edit within the column.
 fn render_inline_server_form<'a, Message: Clone + 'static>(
     form: &'a AddServerForm,
-    edit_index: Option<usize>, // None for add, Some(index) for edit
+    edit_index: Option<usize>,
     on_message: impl Fn(BrowserMsg) -> Message + Copy + 'a,
     space_s: u16,
 ) -> Element<'a, Message> {
@@ -1384,10 +1476,8 @@ fn render_inline_server_form<'a, Message: Clone + 'static>(
 
     let mut content = widget::column::with_capacity(12).spacing(4);
 
-    // Title
     content = content.push(widget::text::body(title).class(cosmic::style::Text::Accent));
 
-    // Server name
     content = content.push(widget::text::caption("Name"));
     content = content.push(
         widget::text_input("My Server", &form.name)
@@ -1396,7 +1486,6 @@ fn render_inline_server_form<'a, Message: Clone + 'static>(
             .padding(4),
     );
 
-    // Server URL
     content = content.push(widget::text::caption("URL"));
     content = content.push(
         widget::text_input("http://localhost:8000", &form.url)
@@ -1405,7 +1494,6 @@ fn render_inline_server_form<'a, Message: Clone + 'static>(
             .padding(4),
     );
 
-    // Auth token
     content = content.push(widget::text::caption("Auth Token"));
     content = content.push(
         widget::secure_input("Token", &form.auth_token, None, true)
@@ -1414,7 +1502,6 @@ fn render_inline_server_form<'a, Message: Clone + 'static>(
             .padding(4),
     );
 
-    // Auth header type - compact toggle
     content = content.push(widget::text::caption("Auth Type"));
     content = content.push(
         widget::row::with_capacity(2)
@@ -1457,11 +1544,7 @@ fn render_inline_server_form<'a, Message: Clone + 'static>(
             ));
         }
         AddServerStatus::TestFailed(err) => {
-            let short_err = if err.len() > 30 {
-                format!("{}...", &err[..30])
-            } else {
-                err.clone()
-            };
+            let short_err = truncate_str(err, 30);
             content = content.push(
                 widget::text::caption(format!("Failed: {short_err}"))
                     .class(cosmic::style::Text::Accent),
@@ -1469,11 +1552,9 @@ fn render_inline_server_form<'a, Message: Clone + 'static>(
         }
     }
 
-    // Buttons - compact layout
     let is_testing = form.status == AddServerStatus::Testing;
     let can_save = form.status == AddServerStatus::TestSuccess && !form.name.is_empty();
 
-    // Cancel and Test buttons
     let cancel_msg = if is_editing {
         on_message(BrowserMsg::CancelEditServer)
     } else {
@@ -1499,7 +1580,6 @@ fn render_inline_server_form<'a, Message: Clone + 'static>(
 
     content = content.push(button_row);
 
-    // Save button on separate row for emphasis
     if can_save {
         let save_msg = if is_editing {
             on_message(BrowserMsg::SaveEditServer)
@@ -1528,7 +1608,6 @@ fn render_dialog<'a, Message: Clone + 'static>(
     space_s: u16,
 ) -> Element<'a, Message> {
     let dialog_widget: Element<'a, Message> = match dialog {
-        // Confirmation dialog for creating tenant on server
         BrowserDialog::ConfirmCreateTenant { tenant, .. } => {
             let dialog_content = widget::column::with_capacity(2)
                 .push(widget::text::body(format!(
@@ -1554,8 +1633,6 @@ fn render_dialog<'a, Message: Clone + 'static>(
                 .control(dialog_content)
                 .into()
         }
-
-        // Input dialogs for adding items
         _ => {
             let (title, placeholder) = match dialog {
                 BrowserDialog::AddServer { .. } => ("Add Server", "Server name"),

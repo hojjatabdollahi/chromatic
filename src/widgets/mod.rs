@@ -1,7 +1,5 @@
 // SPDX-License-Identifier: MPL-2.0
 
 //! Custom widgets for the Chromatic application.
-
-pub mod miller_columns;
-
-pub use miller_columns::MillerColumns;
+//!
+//! External widgets are provided by the `cosmetics` crate.

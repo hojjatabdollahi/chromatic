@@ -6,9 +6,9 @@ use crate::fl;
 use crate::helpers;
 use crate::pages;
 use crate::pages::browser::{
-    AddServerForm, AddServerStatus, BrowserData, BrowserDialog, BrowserMsg, BrowserState,
+    AddServerForm, AddServerStatus, BrowserDialog, BrowserMsg, BrowserState,
 };
-use crate::widgets::miller_columns::MillerMessage;
+use cosmetics::widgets::column_view::ColumnViewMessage;
 use cosmic::app::context_drawer;
 use cosmic::cosmic_config::{self, CosmicConfigEntry};
 use cosmic::iced::{Length, Subscription};
@@ -434,6 +434,7 @@ impl cosmic::Application for AppModel {
             match self.nav.active_data::<Page>().unwrap_or(&Page::Browser) {
                 Page::Browser => pages::browser::view(
                     &self.browser,
+                    &self.config.servers,
                     Message::Browser,
                     space_s,
                     space_m,
@@ -1338,228 +1339,206 @@ impl AppModel {
     /// Handles browser messages.
     fn handle_browser_message(&mut self, msg: BrowserMsg) -> Task<cosmic::Action<Message>> {
         match msg {
-            BrowserMsg::Miller(miller_msg) => {
-                match miller_msg {
-                    MillerMessage::Select {
-                        column: _,
-                        path,
-                        item,
-                    } => {
-                        // Update selection in miller state using full path
-                        self.browser.miller.select(path);
+            // Column view resize
+            BrowserMsg::ColumnView(ColumnViewMessage::ColumnResized { column, width }) => {
+                if column < self.browser.column_widths.len() {
+                    self.browser.column_widths[column] = Some(width);
+                }
+            }
 
-                        // Clear document preview when selecting non-document items
-                        if !matches!(&item.data, BrowserData::Document { .. }) {
-                            self.browser.selected_document = None;
+            // ── Selection ────────────────────────────────────────────────
+
+            BrowserMsg::SelectServer(index) => {
+                if index >= self.config.servers.len() {
+                    return Task::none();
+                }
+
+                // If re-selecting the same server, do nothing
+                if self.browser.selected_server == Some(index) {
+                    return Task::none();
+                }
+
+                self.browser.selected_server = Some(index);
+                self.browser.clear_selection_from_tenant();
+                self.browser.selected_document = None;
+
+                // Load tenants for this server
+                self.browser.set_tenants_loading(index);
+                let config = &self.config.servers[index];
+                let url = config.server_url.clone();
+                let token = config.auth_token.clone();
+                let auth_header_type = config.auth_header_type.clone();
+                let server_index = index;
+
+                return cosmic::task::future(async move {
+                    let result =
+                        helpers::fetch_tenants(&url, &token, &auth_header_type).await;
+                    cosmic::Action::App(Message::Browser(BrowserMsg::TenantsLoaded {
+                        server_index,
+                        result,
+                    }))
+                });
+            }
+
+            BrowserMsg::SelectTenant(name) => {
+                // If re-selecting the same tenant, do nothing
+                if self.browser.selected_tenant.as_deref() == Some(&name) {
+                    return Task::none();
+                }
+
+                self.browser.selected_tenant = Some(name.clone());
+                self.browser.clear_selection_from_database();
+                self.browser.selected_document = None;
+
+                let server_index = match self.browser.selected_server {
+                    Some(idx) => idx,
+                    None => return Task::none(),
+                };
+
+                // Load databases for this tenant
+                self.browser.set_databases_loading(server_index, &name);
+                let config = &self.config.servers[server_index];
+                let url = config.server_url.clone();
+                let token = config.auth_token.clone();
+                let auth_header_type = config.auth_header_type.clone();
+                let tenant = name;
+
+                return cosmic::task::future(async move {
+                    let result =
+                        helpers::fetch_databases(&url, &token, &auth_header_type, &tenant).await;
+                    cosmic::Action::App(Message::Browser(BrowserMsg::DatabasesLoaded {
+                        server_index,
+                        tenant,
+                        result,
+                    }))
+                });
+            }
+
+            BrowserMsg::SelectDatabase(name) => {
+                if self.browser.selected_database.as_deref() == Some(&name) {
+                    return Task::none();
+                }
+
+                self.browser.selected_database = Some(name.clone());
+                self.browser.clear_selection_from_collection();
+                self.browser.selected_document = None;
+
+                let server_index = match self.browser.selected_server {
+                    Some(idx) => idx,
+                    None => return Task::none(),
+                };
+                let tenant = match &self.browser.selected_tenant {
+                    Some(t) => t.clone(),
+                    None => return Task::none(),
+                };
+
+                self.browser.set_collections_loading(server_index, &tenant, &name);
+                let config = &self.config.servers[server_index];
+                let url = config.server_url.clone();
+                let token = config.auth_token.clone();
+                let auth_header_type = config.auth_header_type.clone();
+                let database = name;
+
+                return cosmic::task::future(async move {
+                    let result = helpers::fetch_collections(
+                        &url,
+                        &token,
+                        &auth_header_type,
+                        &tenant,
+                        &database,
+                    )
+                    .await;
+                    cosmic::Action::App(Message::Browser(BrowserMsg::CollectionsLoaded {
+                        server_index,
+                        tenant,
+                        database,
+                        result,
+                    }))
+                });
+            }
+
+            BrowserMsg::SelectCollection(collection_id) => {
+                if self.browser.selected_collection.as_deref() == Some(&collection_id) {
+                    return Task::none();
+                }
+
+                self.browser.selected_collection = Some(collection_id.clone());
+                self.browser.selected_document = None;
+
+                let server_index = match self.browser.selected_server {
+                    Some(idx) => idx,
+                    None => return Task::none(),
+                };
+                let tenant = match &self.browser.selected_tenant {
+                    Some(t) => t.clone(),
+                    None => return Task::none(),
+                };
+                let database = match &self.browser.selected_database {
+                    Some(d) => d.clone(),
+                    None => return Task::none(),
+                };
+
+                self.browser
+                    .set_documents_loading(server_index, &tenant, &database, &collection_id);
+                let config = &self.config.servers[server_index];
+                let url = config.server_url.clone();
+                let token = config.auth_token.clone();
+                let auth_header_type = config.auth_header_type.clone();
+
+                return cosmic::task::future(async move {
+                    let result = helpers::fetch_documents(
+                        &url,
+                        &token,
+                        &auth_header_type,
+                        &collection_id,
+                        &tenant,
+                        &database,
+                        100, // limit
+                        0,   // offset
+                    )
+                    .await;
+                    cosmic::Action::App(Message::Browser(BrowserMsg::DocumentsLoaded {
+                        server_index,
+                        tenant,
+                        database,
+                        collection_id,
+                        result,
+                    }))
+                });
+            }
+
+            BrowserMsg::SelectDocument(document_id) => {
+                // Find the document in cache
+                if let (Some(server_index), Some(tenant), Some(database), Some(collection_id)) = (
+                    self.browser.selected_server,
+                    self.browser.selected_tenant.clone(),
+                    self.browser.selected_database.clone(),
+                    self.browser.selected_collection.clone(),
+                ) {
+                    let cache_key = format!(
+                        "{}:{}:{}:{}",
+                        server_index, tenant, database, collection_id
+                    );
+                    if let Some(documents) = self.browser.documents_cache.get(&cache_key) {
+                        if let Some(doc) = documents.iter().find(|d| d.id == document_id) {
+                            self.selected_document = Some(doc.clone());
+                            self.browser.selected_document = Some(doc.clone());
+                            self.context_page = ContextPage::DocumentDetails;
+                            self.core.window.show_context = true;
+                            return self.browser.scroll_to_end();
                         }
-
-                        // If it's a branch item, we need to load children
-                        match &item.data {
-                            BrowserData::Server { index, config } => {
-                                // Load tenants for this server
-                                let server_index = *index;
-                                self.browser.set_tenants_loading(server_index);
-                                let url = config.server_url.clone();
-                                let token = config.auth_token.clone();
-                                let auth_header_type = config.auth_header_type.clone();
-
-                                return cosmic::task::future(async move {
-                                    let result =
-                                        helpers::fetch_tenants(&url, &token, &auth_header_type)
-                                            .await;
-                                    cosmic::Action::App(Message::Browser(
-                                        BrowserMsg::TenantsLoaded {
-                                            server_index,
-                                            result,
-                                        },
-                                    ))
-                                });
-                            }
-                            BrowserData::Tenant { server_index, name } => {
-                                // Load databases for this tenant
-                                let server_index = *server_index;
-                                let tenant = name.clone();
-                                self.browser.set_databases_loading(server_index, &tenant);
-
-                                let config = &self.config.servers[server_index];
-                                let url = config.server_url.clone();
-                                let token = config.auth_token.clone();
-                                let auth_header_type = config.auth_header_type.clone();
-
-                                return cosmic::task::future(async move {
-                                    let result = helpers::fetch_databases(
-                                        &url,
-                                        &token,
-                                        &auth_header_type,
-                                        &tenant,
-                                    )
-                                    .await;
-                                    cosmic::Action::App(Message::Browser(
-                                        BrowserMsg::DatabasesLoaded {
-                                            server_index,
-                                            tenant,
-                                            result,
-                                        },
-                                    ))
-                                });
-                            }
-                            BrowserData::Database {
-                                server_index,
-                                tenant,
-                                name,
-                            } => {
-                                // Load collections for this database
-                                let server_index = *server_index;
-                                let tenant = tenant.clone();
-                                let database = name.clone();
-                                self.browser.set_collections_loading(
-                                    server_index,
-                                    &tenant,
-                                    &database,
-                                );
-
-                                let config = &self.config.servers[server_index];
-                                let url = config.server_url.clone();
-                                let token = config.auth_token.clone();
-                                let auth_header_type = config.auth_header_type.clone();
-
-                                return cosmic::task::future(async move {
-                                    let result = helpers::fetch_collections(
-                                        &url,
-                                        &token,
-                                        &auth_header_type,
-                                        &tenant,
-                                        &database,
-                                    )
-                                    .await;
-                                    cosmic::Action::App(Message::Browser(
-                                        BrowserMsg::CollectionsLoaded {
-                                            server_index,
-                                            tenant,
-                                            database,
-                                            result,
-                                        },
-                                    ))
-                                });
-                            }
-                            BrowserData::Collection {
-                                server_index,
-                                tenant,
-                                database,
-                                collection,
-                            } => {
-                                // Load documents for this collection
-                                let server_index = *server_index;
-                                let tenant = tenant.clone();
-                                let database = database.clone();
-                                let collection_id = collection.id.clone();
-                                self.browser.set_documents_loading(
-                                    server_index,
-                                    &tenant,
-                                    &database,
-                                    &collection_id,
-                                );
-
-                                let config = &self.config.servers[server_index];
-                                let url = config.server_url.clone();
-                                let token = config.auth_token.clone();
-                                let auth_header_type = config.auth_header_type.clone();
-
-                                return cosmic::task::future(async move {
-                                    let result = helpers::fetch_documents(
-                                        &url,
-                                        &token,
-                                        &auth_header_type,
-                                        &collection_id,
-                                        &tenant,
-                                        &database,
-                                        100, // limit
-                                        0,   // offset
-                                    )
-                                    .await;
-                                    cosmic::Action::App(Message::Browser(
-                                        BrowserMsg::DocumentsLoaded {
-                                            server_index,
-                                            tenant,
-                                            database,
-                                            collection_id,
-                                            result,
-                                        },
-                                    ))
-                                });
-                            }
-                            BrowserData::Document { document, .. } => {
-                                // Show document preview in context drawer
-                                self.selected_document = Some(document.clone());
-                                self.context_page = ContextPage::DocumentDetails;
-                                self.core.window.show_context = true;
-                                // Maintain scroll position after drawer opens
-                                return self.browser.scroll_to_end();
-                            }
-                            _ => {}
-                        }
-                    }
-                    MillerMessage::Activate { item, .. } => {
-                        // Handle activation (e.g., click on leaf items like "Add" buttons)
-                        match &item.data {
-                            BrowserData::AddServer => {
-                                // Show inline form instead of dialog
-                                self.browser.adding_server = Some(AddServerForm::new());
-                            }
-                            BrowserData::AddTenant { server_index } => {
-                                self.browser.dialog = Some(BrowserDialog::AddTenant {
-                                    server_index: *server_index,
-                                    name: String::new(),
-                                });
-                            }
-                            BrowserData::AddDatabase {
-                                server_index,
-                                tenant,
-                            } => {
-                                self.browser.dialog = Some(BrowserDialog::AddDatabase {
-                                    server_index: *server_index,
-                                    tenant: tenant.clone(),
-                                    name: String::new(),
-                                });
-                            }
-                            BrowserData::AddCollection {
-                                server_index,
-                                tenant,
-                                database,
-                            } => {
-                                self.browser.dialog = Some(BrowserDialog::AddCollection {
-                                    server_index: *server_index,
-                                    tenant: tenant.clone(),
-                                    database: database.clone(),
-                                    name: String::new(),
-                                });
-                            }
-                            BrowserData::Document { document, .. } => {
-                                // Show document preview in context drawer
-                                self.selected_document = Some(document.clone());
-                                self.context_page = ContextPage::DocumentDetails;
-                                self.core.window.show_context = true;
-                                // Maintain scroll position after drawer opens
-                                return self.browser.scroll_to_end();
-                            }
-                            _ => {}
-                        }
-                    }
-                    MillerMessage::NeedChildren { .. } => {
-                        // This is handled by Select above
-                    }
-                    MillerMessage::Scroll { .. } => {
-                        // Handle scroll if needed
                     }
                 }
             }
+
+            // ── Async data results ───────────────────────────────────────
 
             BrowserMsg::TenantsLoaded {
                 server_index,
                 result,
             } => match result {
                 Ok(mut tenants) => {
-                    // Merge with tenants from config (locally added tenants that may not exist on server yet)
+                    // Merge with tenants from config
                     if server_index < self.config.servers.len() {
                         for config_tenant in &self.config.servers[server_index].tenants {
                             if !tenants.contains(config_tenant) {
@@ -1568,7 +1547,6 @@ impl AppModel {
                         }
                     }
                     self.browser.set_tenants(server_index, tenants);
-                    // Scroll to show new column
                     return self.browser.scroll_to_end();
                 }
                 Err(e) => {
@@ -1591,18 +1569,15 @@ impl AppModel {
             } => match result {
                 Ok(databases) => {
                     self.browser.set_databases(server_index, &tenant, databases);
-                    // Scroll to show new column
                     return self.browser.scroll_to_end();
                 }
                 Err(e) => {
-                    // Check if the error indicates tenant doesn't exist
                     let tenant_not_found = e.to_lowercase().contains("tenant")
                         && (e.to_lowercase().contains("not found")
                             || e.to_lowercase().contains("does not exist")
                             || e.contains("404"));
 
                     if tenant_not_found {
-                        // Show confirmation dialog to create tenant on server
                         self.browser.dialog = Some(BrowserDialog::ConfirmCreateTenant {
                             server_index,
                             tenant: tenant.clone(),
@@ -1622,7 +1597,6 @@ impl AppModel {
                 Ok(collections) => {
                     self.browser
                         .set_collections(server_index, &tenant, &database, collections);
-                    // Scroll to show new column
                     return self.browser.scroll_to_end();
                 }
                 Err(e) => {
@@ -1646,7 +1620,6 @@ impl AppModel {
                         &collection_id,
                         documents,
                     );
-                    // Scroll to show new column
                     return self.browser.scroll_to_end();
                 }
                 Err(e) => {
@@ -1660,6 +1633,8 @@ impl AppModel {
                 }
             },
 
+            // ── Dialogs ──────────────────────────────────────────────────
+
             BrowserMsg::DialogInputChanged(value) => {
                 if let Some(ref mut dialog) = self.browser.dialog {
                     match dialog {
@@ -1667,7 +1642,6 @@ impl AppModel {
                         BrowserDialog::AddTenant { name, .. } => *name = value,
                         BrowserDialog::AddDatabase { name, .. } => *name = value,
                         BrowserDialog::AddCollection { name, .. } => *name = value,
-                        // ConfirmCreateTenant has no text input
                         BrowserDialog::ConfirmCreateTenant { .. } => {}
                     }
                 }
@@ -1681,19 +1655,16 @@ impl AppModel {
                 if let Some(dialog) = self.browser.dialog.take() {
                     match dialog {
                         BrowserDialog::AddServer { name } => {
-                            // Add new server to config
                             let new_server = ServerConfig::new(&name);
                             self.config.add_server(new_server);
                             if let Some(ref context) = self.config_context {
                                 let _ = self.config.write_entry(context);
                             }
-                            // Refresh browser with new servers
                             self.browser.refresh_servers(&self.config.servers);
                             self.server_names =
                                 self.config.servers.iter().map(|s| s.name.clone()).collect();
                         }
                         BrowserDialog::AddTenant { server_index, name } => {
-                            // Add tenant to local cache and persist to config
                             let mut tenants = self
                                 .browser
                                 .tenants_cache
@@ -1704,7 +1675,6 @@ impl AppModel {
                                 tenants.push(name.clone());
                                 self.browser.set_tenants(server_index, tenants);
 
-                                // Also save to config for persistence
                                 if server_index < self.config.servers.len() {
                                     self.config.servers[server_index].add_tenant(&name);
                                     if let Some(ref context) = self.config_context {
@@ -1717,7 +1687,6 @@ impl AppModel {
                             server_index,
                             tenant,
                         } => {
-                            // User confirmed creating tenant on server
                             let config = &self.config.servers[server_index];
                             let url = config.server_url.clone();
                             let token = config.auth_token.clone();
@@ -1743,7 +1712,6 @@ impl AppModel {
                             tenant,
                             name,
                         } => {
-                            // Create database
                             let config = &self.config.servers[server_index];
                             let url = config.server_url.clone();
                             let token = config.auth_token.clone();
@@ -1758,12 +1726,14 @@ impl AppModel {
                                     &tenant,
                                 )
                                 .await;
-                                cosmic::Action::App(Message::Browser(BrowserMsg::DatabaseCreated {
-                                    server_index,
-                                    tenant,
-                                    database: name,
-                                    result,
-                                }))
+                                cosmic::Action::App(Message::Browser(
+                                    BrowserMsg::DatabaseCreated {
+                                        server_index,
+                                        tenant,
+                                        database: name,
+                                        result,
+                                    },
+                                ))
                             });
                         }
                         BrowserDialog::AddCollection {
@@ -1772,7 +1742,6 @@ impl AppModel {
                             database,
                             name,
                         } => {
-                            // Create collection
                             let config = &self.config.servers[server_index];
                             let url = config.server_url.clone();
                             let token = config.auth_token.clone();
@@ -1802,8 +1771,9 @@ impl AppModel {
                 }
             }
 
+            // ── CRUD results ─────────────────────────────────────────────
+
             BrowserMsg::ServerCreated => {
-                // Refresh servers
                 self.browser.refresh_servers(&self.config.servers);
             }
 
@@ -1813,14 +1783,12 @@ impl AppModel {
                 result,
             } => match result {
                 Ok(()) => {
-                    // Tenant created successfully - now load databases for this tenant
                     self.browser.set_databases_loading(server_index, &tenant);
                     let config = &self.config.servers[server_index];
                     let url = config.server_url.clone();
                     let token = config.auth_token.clone();
                     let auth_header_type = config.auth_header_type.clone();
 
-                    // Show success notification
                     self.notification_id_counter += 1;
                     self.notifications.push(Notification {
                         id: self.notification_id_counter,
@@ -1858,7 +1826,6 @@ impl AppModel {
                 result,
             } => match result {
                 Ok(()) => {
-                    // Refresh databases for this tenant
                     self.browser.set_databases_loading(server_index, &tenant);
                     let config = &self.config.servers[server_index];
                     let url = config.server_url.clone();
@@ -1894,7 +1861,6 @@ impl AppModel {
                 result,
             } => match result {
                 Ok(_collection) => {
-                    // Refresh collections for this database
                     self.browser
                         .set_collections_loading(server_index, &tenant, &database);
                     let config = &self.config.servers[server_index];
@@ -1930,7 +1896,8 @@ impl AppModel {
                 }
             },
 
-            // Add Server form handlers
+            // ── Add Server form ──────────────────────────────────────────
+
             BrowserMsg::StartAddServer => {
                 self.browser.adding_server = Some(AddServerForm::new());
             }
@@ -1948,7 +1915,6 @@ impl AppModel {
             BrowserMsg::AddServerUrlChanged(url) => {
                 if let Some(ref mut form) = self.browser.adding_server {
                     form.url = url;
-                    // Reset status when URL changes
                     form.status = AddServerStatus::Editing;
                 }
             }
@@ -1956,7 +1922,6 @@ impl AppModel {
             BrowserMsg::AddServerAuthTokenChanged(token) => {
                 if let Some(ref mut form) = self.browser.adding_server {
                     form.auth_token = token;
-                    // Reset status when auth changes
                     form.status = AddServerStatus::Editing;
                 }
             }
@@ -1964,7 +1929,6 @@ impl AppModel {
             BrowserMsg::AddServerAuthHeaderTypeChanged(auth_type) => {
                 if let Some(ref mut form) = self.browser.adding_server {
                     form.auth_header_type = auth_type;
-                    // Reset status when auth type changes
                     form.status = AddServerStatus::Editing;
                 }
             }
@@ -1997,7 +1961,6 @@ impl AppModel {
 
             BrowserMsg::SaveNewServer => {
                 if let Some(form) = self.browser.adding_server.take() {
-                    // Only save if test was successful
                     if form.status == AddServerStatus::TestSuccess && !form.name.is_empty() {
                         let mut new_server = ServerConfig::new(&form.name);
                         new_server.server_url = form.url;
@@ -2009,7 +1972,6 @@ impl AppModel {
                             let _ = self.config.write_entry(context);
                         }
 
-                        // Refresh browser with new servers
                         self.browser.refresh_servers(&self.config.servers);
                         self.server_names =
                             self.config.servers.iter().map(|s| s.name.clone()).collect();
@@ -2025,12 +1987,97 @@ impl AppModel {
                 }
             }
 
-            // Delete handlers
+            // ── Server edit/delete ───────────────────────────────────────
+
+            BrowserMsg::StartEditServer { index } => {
+                self.browser.open_menu = None;
+                let config = &self.config.servers[index];
+                let form = AddServerForm {
+                    name: config.name.clone(),
+                    url: config.server_url.clone(),
+                    auth_token: config.auth_token.clone(),
+                    auth_header_type: config.auth_header_type.clone(),
+                    status: AddServerStatus::Editing,
+                };
+                self.browser.editing_server = Some((index, form));
+            }
+
+            BrowserMsg::CancelEditServer => {
+                self.browser.editing_server = None;
+            }
+
+            BrowserMsg::SaveEditServer => {
+                if let Some((index, form)) = self.browser.editing_server.take() {
+                    if index < self.config.servers.len() {
+                        self.config.servers[index].name = form.name;
+                        self.config.servers[index].server_url = form.url;
+                        self.config.servers[index].auth_token = form.auth_token;
+                        self.config.servers[index].auth_header_type = form.auth_header_type;
+                        if let Some(Err(e)) = self
+                            .config_context
+                            .as_ref()
+                            .map(|ctx| self.config.write_entry(ctx))
+                        {
+                            eprintln!("Failed to save config: {e}");
+                        }
+                        self.browser.refresh_servers(&self.config.servers);
+                    }
+                }
+            }
+
+            BrowserMsg::RequestDeleteServer { index } => {
+                self.browser.open_menu = None;
+                if index < self.config.servers.len() {
+                    self.browser.tenants_cache.remove(&index);
+                    let keys_to_remove: Vec<_> = self
+                        .browser
+                        .databases_cache
+                        .keys()
+                        .filter(|k| k.starts_with(&format!("{}:", index)))
+                        .cloned()
+                        .collect();
+                    for key in keys_to_remove {
+                        self.browser.databases_cache.remove(&key);
+                    }
+                    let keys_to_remove: Vec<_> = self
+                        .browser
+                        .collections_cache
+                        .keys()
+                        .filter(|k| k.starts_with(&format!("{}:", index)))
+                        .cloned()
+                        .collect();
+                    for key in keys_to_remove {
+                        self.browser.collections_cache.remove(&key);
+                    }
+
+                    self.config.servers.remove(index);
+
+                    if self.config.servers.is_empty() {
+                        self.config.active_server = 0;
+                    } else if self.config.active_server >= self.config.servers.len() {
+                        self.config.active_server = self.config.servers.len() - 1;
+                    }
+
+                    if let Some(Err(e)) = self
+                        .config_context
+                        .as_ref()
+                        .map(|ctx| self.config.write_entry(ctx))
+                    {
+                        eprintln!("Failed to save config: {e}");
+                    }
+
+                    self.browser.refresh_servers(&self.config.servers);
+                }
+            }
+
+            // ── Delete handlers ──────────────────────────────────────────
+
             BrowserMsg::RequestDeleteDatabase {
                 server_index,
                 tenant,
                 name,
             } => {
+                self.browser.open_menu = None;
                 let config = &self.config.servers[server_index];
                 let url = config.server_url.clone();
                 let token = config.auth_token.clone();
@@ -2055,6 +2102,7 @@ impl AppModel {
                 collection_id,
                 collection_name: _,
             } => {
+                self.browser.open_menu = None;
                 let config = &self.config.servers[server_index];
                 let url = config.server_url.clone();
                 let token = config.auth_token.clone();
@@ -2086,6 +2134,7 @@ impl AppModel {
                 collection_id,
                 document_id,
             } => {
+                self.browser.open_menu = None;
                 let config = &self.config.servers[server_index];
                 let url = config.server_url.clone();
                 let token = config.auth_token.clone();
@@ -2118,7 +2167,6 @@ impl AppModel {
                 result,
             } => match result {
                 Ok(()) => {
-                    // Refresh databases list
                     self.browser.set_databases_loading(server_index, &tenant);
                     let config = &self.config.servers[server_index];
                     let url = config.server_url.clone();
@@ -2162,7 +2210,6 @@ impl AppModel {
                 result,
             } => match result {
                 Ok(()) => {
-                    // Refresh collections list
                     self.browser
                         .set_collections_loading(server_index, &tenant, &database);
                     let config = &self.config.servers[server_index];
@@ -2214,7 +2261,6 @@ impl AppModel {
                 result,
             } => match result {
                 Ok(()) => {
-                    // Refresh documents list
                     self.browser.set_documents_loading(
                         server_index,
                         &tenant,
@@ -2266,124 +2312,63 @@ impl AppModel {
                 }
             },
 
-            // Server edit/delete actions
-            BrowserMsg::StartEditServer { index } => {
-                // Close menu and start editing
-                self.browser.open_menu = None;
-                // Create form pre-populated with current server config
-                let config = &self.config.servers[index];
-                let form = AddServerForm {
-                    name: config.name.clone(),
-                    url: config.server_url.clone(),
-                    auth_token: config.auth_token.clone(),
-                    auth_header_type: config.auth_header_type.clone(),
-                    status: AddServerStatus::Editing,
-                };
-                self.browser.editing_server = Some((index, form));
-            }
-            BrowserMsg::CancelEditServer => {
-                self.browser.editing_server = None;
-            }
-            BrowserMsg::SaveEditServer => {
-                if let Some((index, form)) = self.browser.editing_server.take() {
-                    // Update the server config
-                    if index < self.config.servers.len() {
-                        self.config.servers[index].name = form.name;
-                        self.config.servers[index].server_url = form.url;
-                        self.config.servers[index].auth_token = form.auth_token;
-                        self.config.servers[index].auth_header_type = form.auth_header_type;
-                        // Save config
-                        if let Some(Err(e)) = self
-                            .config_context
-                            .as_ref()
-                            .map(|ctx| self.config.write_entry(ctx))
-                        {
-                            eprintln!("Failed to save config: {e}");
-                        }
-                        // Refresh server list in browser
-                        self.browser.refresh_servers(&self.config.servers);
-                    }
-                }
-            }
-            BrowserMsg::RequestDeleteServer { index } => {
-                // Close menu
-                self.browser.open_menu = None;
-                // Delete the server
-                if index < self.config.servers.len() {
-                    // Clear cached data for this server
-                    self.browser.tenants_cache.remove(&index);
-                    // Remove databases and collections caches for this server
-                    let keys_to_remove: Vec<_> = self
-                        .browser
-                        .databases_cache
-                        .keys()
-                        .filter(|k| k.starts_with(&format!("{}:", index)))
-                        .cloned()
-                        .collect();
-                    for key in keys_to_remove {
-                        self.browser.databases_cache.remove(&key);
-                    }
-                    let keys_to_remove: Vec<_> = self
-                        .browser
-                        .collections_cache
-                        .keys()
-                        .filter(|k| k.starts_with(&format!("{}:", index)))
-                        .cloned()
-                        .collect();
-                    for key in keys_to_remove {
-                        self.browser.collections_cache.remove(&key);
-                    }
+            // ── Add-new dialog openers ───────────────────────────────────
 
-                    // Remove the server from config
-                    self.config.servers.remove(index);
-
-                    // Adjust active_server index if needed
-                    if self.config.servers.is_empty() {
-                        // No servers left - this shouldn't normally happen
-                        // but let's handle it gracefully
-                        self.config.active_server = 0;
-                    } else if self.config.active_server >= self.config.servers.len() {
-                        self.config.active_server = self.config.servers.len() - 1;
-                    }
-
-                    // Save config
-                    if let Some(Err(e)) = self
-                        .config_context
-                        .as_ref()
-                        .map(|ctx| self.config.write_entry(ctx))
-                    {
-                        eprintln!("Failed to save config: {e}");
-                    }
-
-                    // Refresh server list in browser
-                    self.browser.refresh_servers(&self.config.servers);
-                }
+            BrowserMsg::OpenAddTenantDialog { server_index } => {
+                self.browser.dialog = Some(BrowserDialog::AddTenant {
+                    server_index,
+                    name: String::new(),
+                });
             }
 
-            // Menu actions
+            BrowserMsg::OpenAddDatabaseDialog { server_index, tenant } => {
+                self.browser.dialog = Some(BrowserDialog::AddDatabase {
+                    server_index,
+                    tenant,
+                    name: String::new(),
+                });
+            }
+
+            BrowserMsg::OpenAddCollectionDialog {
+                server_index,
+                tenant,
+                database,
+            } => {
+                self.browser.dialog = Some(BrowserDialog::AddCollection {
+                    server_index,
+                    tenant,
+                    database,
+                    name: String::new(),
+                });
+            }
+
+            // ── Menu ─────────────────────────────────────────────────────
+
             BrowserMsg::ToggleMenu(menu_id) => {
-                // Toggle menu: if same menu is open, close it; otherwise open the new one
                 if self.browser.open_menu.as_ref() == Some(&menu_id) {
                     self.browser.open_menu = None;
                 } else {
                     self.browser.open_menu = Some(menu_id);
                 }
             }
+
             BrowserMsg::CloseMenu => {
                 self.browser.open_menu = None;
             }
 
-            // Filter messages
+            // ── Filter ───────────────────────────────────────────────────
+
             BrowserMsg::ToggleServerFilter => {
                 self.browser.server_filter_visible = !self.browser.server_filter_visible;
-                // Clear filter when hiding
                 if !self.browser.server_filter_visible {
                     self.browser.server_filter.clear();
                 }
             }
+
             BrowserMsg::FilterServers(filter) => {
                 self.browser.server_filter = filter;
             }
+
             BrowserMsg::ClearServerFilter => {
                 self.browser.server_filter.clear();
                 self.browser.server_filter_visible = false;
