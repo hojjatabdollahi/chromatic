@@ -375,6 +375,10 @@ impl cosmic::Application for AppModel {
         // Close nav bar by default
         app.core.nav_bar_set_toggled(false);
 
+        // Use side panel mode for context drawer (not overlay) so it doesn't float
+        // on top of the content and cause layout shifts.
+        app.core.window.context_is_overlay = false;
+
         // Create a startup command that sets the window title.
         let command = app.update_title();
 
@@ -489,17 +493,11 @@ impl cosmic::Application for AppModel {
     fn update(&mut self, message: Self::Message) -> Task<cosmic::Action<Self::Message>> {
         match message {
             Message::ToggleContextPage(context_page) => {
-                let was_open = self.core.window.show_context;
                 if self.context_page == context_page {
                     self.core.window.show_context = !self.core.window.show_context;
                 } else {
                     self.context_page = context_page;
                     self.core.window.show_context = true;
-                }
-                // Maintain scroll position on Browser page when drawer state changes
-                let is_browser = self.nav.active_data::<Page>() == Some(&Page::Browser);
-                if is_browser && (was_open != self.core.window.show_context) {
-                    return self.browser.scroll_to_end();
                 }
             }
 
@@ -1103,8 +1101,6 @@ impl cosmic::Application for AppModel {
             Message::CloseDocumentDetails => {
                 self.selected_document = None;
                 self.core.window.show_context = false;
-                // Maintain scroll position when closing document preview
-                return self.browser.scroll_to_end();
             }
 
             // Collection management
@@ -1526,7 +1522,6 @@ impl AppModel {
                             self.browser.selected_document = Some(doc.clone());
                             self.context_page = ContextPage::DocumentDetails;
                             self.core.window.show_context = true;
-                            return self.browser.scroll_to_end();
                         }
                     }
                 }
@@ -1641,7 +1636,12 @@ impl AppModel {
                     match dialog {
                         BrowserDialog::AddDatabase { name, .. }
                         | BrowserDialog::AddCollection { name, .. } => *name = value,
-                        BrowserDialog::ConfirmCreateTenant { .. } => {}
+                        // Confirmation dialogs have no text input
+                        BrowserDialog::ConfirmCreateTenant { .. }
+                        | BrowserDialog::ConfirmDeleteServer { .. }
+                        | BrowserDialog::ConfirmDeleteDatabase { .. }
+                        | BrowserDialog::ConfirmDeleteCollection { .. }
+                        | BrowserDialog::ConfirmDeleteDocument { .. } => {}
                     }
                 }
             }
@@ -1732,6 +1732,152 @@ impl AppModel {
                                         server_index,
                                         tenant,
                                         database,
+                                        result,
+                                    },
+                                ))
+                            });
+                        }
+
+                        // ── Confirm delete actions ───────────────────────
+
+                        BrowserDialog::ConfirmDeleteServer { index, .. } => {
+                            if index < self.config.servers.len() {
+                                // Clear caches for this server
+                                self.browser.tenants_cache.remove(&index);
+                                let keys_to_remove: Vec<_> = self
+                                    .browser
+                                    .databases_cache
+                                    .keys()
+                                    .filter(|k| k.starts_with(&format!("{index}:")))
+                                    .cloned()
+                                    .collect();
+                                for key in keys_to_remove {
+                                    self.browser.databases_cache.remove(&key);
+                                }
+                                let keys_to_remove: Vec<_> = self
+                                    .browser
+                                    .collections_cache
+                                    .keys()
+                                    .filter(|k| k.starts_with(&format!("{index}:")))
+                                    .cloned()
+                                    .collect();
+                                for key in keys_to_remove {
+                                    self.browser.collections_cache.remove(&key);
+                                }
+
+                                self.config.servers.remove(index);
+
+                                if self.config.servers.is_empty() {
+                                    self.config.active_server = 0;
+                                } else if self.config.active_server >= self.config.servers.len() {
+                                    self.config.active_server = self.config.servers.len() - 1;
+                                }
+
+                                if let Some(Err(e)) = self
+                                    .config_context
+                                    .as_ref()
+                                    .map(|ctx| self.config.write_entry(ctx))
+                                {
+                                    eprintln!("Failed to save config: {e}");
+                                }
+
+                                self.browser.refresh_servers(&self.config.servers);
+                                self.server_names =
+                                    self.config.servers.iter().map(|s| s.name.clone()).collect();
+                            }
+                        }
+
+                        BrowserDialog::ConfirmDeleteDatabase {
+                            server_index,
+                            tenant,
+                            name,
+                        } => {
+                            let config = &self.config.servers[server_index];
+                            let url = config.server_url.clone();
+                            let token = config.auth_token.clone();
+                            let auth_header_type = config.auth_header_type.clone();
+
+                            return cosmic::task::future(async move {
+                                let result = helpers::delete_database(
+                                    &url,
+                                    &token,
+                                    &auth_header_type,
+                                    &name,
+                                    &tenant,
+                                )
+                                .await;
+                                cosmic::Action::App(Message::Browser(
+                                    BrowserMsg::DatabaseDeleted {
+                                        server_index,
+                                        tenant,
+                                        result,
+                                    },
+                                ))
+                            });
+                        }
+
+                        BrowserDialog::ConfirmDeleteCollection {
+                            server_index,
+                            tenant,
+                            database,
+                            collection_id,
+                            ..
+                        } => {
+                            let config = &self.config.servers[server_index];
+                            let url = config.server_url.clone();
+                            let token = config.auth_token.clone();
+                            let auth_header_type = config.auth_header_type.clone();
+
+                            return cosmic::task::future(async move {
+                                let result = helpers::delete_collection(
+                                    &url,
+                                    &token,
+                                    &auth_header_type,
+                                    &collection_id,
+                                    &tenant,
+                                    &database,
+                                )
+                                .await;
+                                cosmic::Action::App(Message::Browser(
+                                    BrowserMsg::CollectionDeleted {
+                                        server_index,
+                                        tenant,
+                                        database,
+                                        result,
+                                    },
+                                ))
+                            });
+                        }
+
+                        BrowserDialog::ConfirmDeleteDocument {
+                            server_index,
+                            tenant,
+                            database,
+                            collection_id,
+                            document_id,
+                        } => {
+                            let config = &self.config.servers[server_index];
+                            let url = config.server_url.clone();
+                            let token = config.auth_token.clone();
+                            let auth_header_type = config.auth_header_type.clone();
+
+                            return cosmic::task::future(async move {
+                                let result = helpers::delete_document(
+                                    &url,
+                                    &token,
+                                    &auth_header_type,
+                                    &collection_id,
+                                    &document_id,
+                                    &tenant,
+                                    &database,
+                                )
+                                .await;
+                                cosmic::Action::App(Message::Browser(
+                                    BrowserMsg::DocumentDeleted {
+                                        server_index,
+                                        tenant,
+                                        database,
+                                        collection_id,
                                         result,
                                     },
                                 ))
@@ -1996,45 +2142,11 @@ impl AppModel {
 
             BrowserMsg::RequestDeleteServer { index } => {
                 if index < self.config.servers.len() {
-                    self.browser.tenants_cache.remove(&index);
-                    let keys_to_remove: Vec<_> = self
-                        .browser
-                        .databases_cache
-                        .keys()
-                        .filter(|k| k.starts_with(&format!("{}:", index)))
-                        .cloned()
-                        .collect();
-                    for key in keys_to_remove {
-                        self.browser.databases_cache.remove(&key);
-                    }
-                    let keys_to_remove: Vec<_> = self
-                        .browser
-                        .collections_cache
-                        .keys()
-                        .filter(|k| k.starts_with(&format!("{}:", index)))
-                        .cloned()
-                        .collect();
-                    for key in keys_to_remove {
-                        self.browser.collections_cache.remove(&key);
-                    }
-
-                    self.config.servers.remove(index);
-
-                    if self.config.servers.is_empty() {
-                        self.config.active_server = 0;
-                    } else if self.config.active_server >= self.config.servers.len() {
-                        self.config.active_server = self.config.servers.len() - 1;
-                    }
-
-                    if let Some(Err(e)) = self
-                        .config_context
-                        .as_ref()
-                        .map(|ctx| self.config.write_entry(ctx))
-                    {
-                        eprintln!("Failed to save config: {e}");
-                    }
-
-                    self.browser.refresh_servers(&self.config.servers);
+                    let name = self.config.servers[index].name.clone();
+                    self.browser.dialog = Some(BrowserDialog::ConfirmDeleteServer {
+                        index,
+                        name,
+                    });
                 }
             }
 
@@ -2045,20 +2157,10 @@ impl AppModel {
                 tenant,
                 name,
             } => {
-                let config = &self.config.servers[server_index];
-                let url = config.server_url.clone();
-                let token = config.auth_token.clone();
-                let auth_header_type = config.auth_header_type.clone();
-
-                return cosmic::task::future(async move {
-                    let result =
-                        helpers::delete_database(&url, &token, &auth_header_type, &name, &tenant)
-                            .await;
-                    cosmic::Action::App(Message::Browser(BrowserMsg::DatabaseDeleted {
-                        server_index,
-                        tenant,
-                        result,
-                    }))
+                self.browser.dialog = Some(BrowserDialog::ConfirmDeleteDatabase {
+                    server_index,
+                    tenant,
+                    name,
                 });
             }
 
@@ -2067,29 +2169,14 @@ impl AppModel {
                 tenant,
                 database,
                 collection_id,
-                collection_name: _,
+                collection_name,
             } => {
-                let config = &self.config.servers[server_index];
-                let url = config.server_url.clone();
-                let token = config.auth_token.clone();
-                let auth_header_type = config.auth_header_type.clone();
-
-                return cosmic::task::future(async move {
-                    let result = helpers::delete_collection(
-                        &url,
-                        &token,
-                        &auth_header_type,
-                        &collection_id,
-                        &tenant,
-                        &database,
-                    )
-                    .await;
-                    cosmic::Action::App(Message::Browser(BrowserMsg::CollectionDeleted {
-                        server_index,
-                        tenant,
-                        database,
-                        result,
-                    }))
+                self.browser.dialog = Some(BrowserDialog::ConfirmDeleteCollection {
+                    server_index,
+                    tenant,
+                    database,
+                    collection_id,
+                    collection_name,
                 });
             }
 
@@ -2100,29 +2187,12 @@ impl AppModel {
                 collection_id,
                 document_id,
             } => {
-                let config = &self.config.servers[server_index];
-                let url = config.server_url.clone();
-                let token = config.auth_token.clone();
-                let auth_header_type = config.auth_header_type.clone();
-
-                return cosmic::task::future(async move {
-                    let result = helpers::delete_document(
-                        &url,
-                        &token,
-                        &auth_header_type,
-                        &collection_id,
-                        &document_id,
-                        &tenant,
-                        &database,
-                    )
-                    .await;
-                    cosmic::Action::App(Message::Browser(BrowserMsg::DocumentDeleted {
-                        server_index,
-                        tenant,
-                        database,
-                        collection_id,
-                        result,
-                    }))
+                self.browser.dialog = Some(BrowserDialog::ConfirmDeleteDocument {
+                    server_index,
+                    tenant,
+                    database,
+                    collection_id,
+                    document_id,
                 });
             }
 

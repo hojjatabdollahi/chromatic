@@ -102,7 +102,7 @@ pub struct AddTenantForm {
     pub editing: Option<String>,
 }
 
-/// Dialog types for adding new items.
+/// Dialog types for the browser page.
 #[derive(Debug, Clone)]
 pub enum BrowserDialog {
     AddDatabase {
@@ -118,6 +118,30 @@ pub enum BrowserDialog {
     },
     /// Confirmation dialog when tenant doesn't exist on server.
     ConfirmCreateTenant { server_index: usize, tenant: String },
+    /// Confirm deletion of a server.
+    ConfirmDeleteServer { index: usize, name: String },
+    /// Confirm deletion of a database.
+    ConfirmDeleteDatabase {
+        server_index: usize,
+        tenant: String,
+        name: String,
+    },
+    /// Confirm deletion of a collection.
+    ConfirmDeleteCollection {
+        server_index: usize,
+        tenant: String,
+        database: String,
+        collection_id: String,
+        collection_name: String,
+    },
+    /// Confirm deletion of a document.
+    ConfirmDeleteDocument {
+        server_index: usize,
+        tenant: String,
+        database: String,
+        collection_id: String,
+        document_id: String,
+    },
 }
 
 // ── Browser state ────────────────────────────────────────────────────────────
@@ -517,7 +541,6 @@ pub enum BrowserMsg {
         tenant: String,
         database: String,
         collection_id: String,
-        #[allow(dead_code)]
         collection_name: String,
     },
     RequestDeleteDocument {
@@ -1711,6 +1734,75 @@ fn render_inline_tenant_form<'a, Message: Clone + 'static>(
 
 // ── Dialogs ──────────────────────────────────────────────────────────────────
 
+/// Renders a confirmation dialog (no text input, just confirm/cancel).
+fn render_confirm_dialog<'a, Message: Clone + 'static>(
+    title: &str,
+    body: &str,
+    confirm_label: &'a str,
+    destructive: bool,
+    on_message: impl Fn(BrowserMsg) -> Message + Copy + 'a,
+    space_s: u16,
+) -> Element<'a, Message> {
+    let confirm_btn = if destructive {
+        widget::button::destructive(confirm_label).on_press(on_message(BrowserMsg::DialogConfirm))
+    } else {
+        widget::button::suggested(confirm_label).on_press(on_message(BrowserMsg::DialogConfirm))
+    };
+
+    let dialog_content = widget::column::with_capacity(2)
+        .push(widget::text::body(body.to_string()))
+        .push(
+            widget::row::with_capacity(2)
+                .push(
+                    widget::button::standard("Cancel")
+                        .on_press(on_message(BrowserMsg::DialogCancel)),
+                )
+                .push(confirm_btn)
+                .spacing(space_s),
+        )
+        .spacing(space_s);
+
+    widget::dialog()
+        .title(title.to_string())
+        .control(dialog_content)
+        .into()
+}
+
+/// Renders an input dialog (text input + confirm/cancel).
+fn render_input_dialog<'a, Message: Clone + 'static>(
+    title: &str,
+    placeholder: &'a str,
+    value: &'a str,
+    on_message: impl Fn(BrowserMsg) -> Message + Copy + 'a,
+    space_s: u16,
+) -> Element<'a, Message> {
+    let dialog_content = widget::column::with_capacity(2)
+        .push(
+            widget::text_input(placeholder, value)
+                .on_input(move |s| on_message(BrowserMsg::DialogInputChanged(s)))
+                .on_submit(move |_| on_message(BrowserMsg::DialogConfirm))
+                .width(Length::Fixed(300.0)),
+        )
+        .push(
+            widget::row::with_capacity(2)
+                .push(
+                    widget::button::standard("Cancel")
+                        .on_press(on_message(BrowserMsg::DialogCancel)),
+                )
+                .push(
+                    widget::button::suggested("Create")
+                        .on_press(on_message(BrowserMsg::DialogConfirm)),
+                )
+                .spacing(space_s),
+        )
+        .spacing(space_s);
+
+    widget::dialog()
+        .title(title.to_string())
+        .control(dialog_content)
+        .into()
+}
+
 fn render_dialog<'a, Message: Clone + 'static>(
     background: Element<'a, Message>,
     dialog: &'a BrowserDialog,
@@ -1718,65 +1810,70 @@ fn render_dialog<'a, Message: Clone + 'static>(
     space_s: u16,
 ) -> Element<'a, Message> {
     let dialog_widget: Element<'a, Message> = match dialog {
+        // ── Confirmation dialogs (no text input) ─────────────────────
         BrowserDialog::ConfirmCreateTenant { tenant, .. } => {
-            let dialog_content = widget::column::with_capacity(2)
-                .push(widget::text::body(format!(
+            render_confirm_dialog(
+                "Create Tenant?",
+                &format!(
                     "Tenant '{tenant}' doesn't exist on the server. Would you like to create it?"
-                )))
-                .push(
-                    widget::row::with_capacity(2)
-                        .push(
-                            widget::button::standard("Cancel")
-                                .on_press(on_message(BrowserMsg::DialogCancel)),
-                        )
-                        .push(
-                            widget::button::suggested("Create Tenant")
-                                .on_press(on_message(BrowserMsg::DialogConfirm)),
-                        )
-                        .spacing(space_s),
-                )
-                .spacing(space_s);
-
-            widget::dialog()
-                .title("Create Tenant?")
-                .control(dialog_content)
-                .into()
+                ),
+                "Create Tenant",
+                false,
+                on_message,
+                space_s,
+            )
         }
-        _ => {
-            let (title, placeholder) = match dialog {
-                BrowserDialog::AddDatabase { .. } => ("Add Database", "Database name"),
-                BrowserDialog::AddCollection { .. } => ("Add Collection", "Collection name"),
-                BrowserDialog::ConfirmCreateTenant { .. } => unreachable!(),
-            };
+        BrowserDialog::ConfirmDeleteServer { name, .. } => {
+            render_confirm_dialog(
+                "Delete Server?",
+                &format!("Are you sure you want to delete server '{name}'? This cannot be undone."),
+                "Delete",
+                true,
+                on_message,
+                space_s,
+            )
+        }
+        BrowserDialog::ConfirmDeleteDatabase { name, .. } => {
+            render_confirm_dialog(
+                "Delete Database?",
+                &format!(
+                    "Are you sure you want to delete database '{name}'? This cannot be undone."
+                ),
+                "Delete",
+                true,
+                on_message,
+                space_s,
+            )
+        }
+        BrowserDialog::ConfirmDeleteCollection {
+            collection_name, ..
+        } => render_confirm_dialog(
+            "Delete Collection?",
+            &format!(
+                "Are you sure you want to delete collection '{collection_name}'? This cannot be undone."
+            ),
+            "Delete",
+            true,
+            on_message,
+            space_s,
+        ),
+        BrowserDialog::ConfirmDeleteDocument { document_id, .. } => render_confirm_dialog(
+            "Delete Document?",
+            &format!(
+                "Are you sure you want to delete document '{document_id}'? This cannot be undone."
+            ),
+            "Delete",
+            true,
+            on_message,
+            space_s,
+        ),
 
-            let value = match dialog {
-                BrowserDialog::AddDatabase { name, .. } => name,
-                BrowserDialog::AddCollection { name, .. } => name,
-                BrowserDialog::ConfirmCreateTenant { .. } => unreachable!(),
-            };
-
-            let dialog_content = widget::column::with_capacity(2)
-                .push(
-                    widget::text_input(placeholder, value)
-                        .on_input(move |s| on_message(BrowserMsg::DialogInputChanged(s)))
-                        .on_submit(move |_| on_message(BrowserMsg::DialogConfirm))
-                        .width(Length::Fixed(300.0)),
-                )
-                .push(
-                    widget::row::with_capacity(2)
-                        .push(
-                            widget::button::standard("Cancel")
-                                .on_press(on_message(BrowserMsg::DialogCancel)),
-                        )
-                        .push(
-                            widget::button::suggested("Create")
-                                .on_press(on_message(BrowserMsg::DialogConfirm)),
-                        )
-                        .spacing(space_s),
-                )
-                .spacing(space_s);
-
-            widget::dialog().title(title).control(dialog_content).into()
+        // ── Input dialogs (text input for name) ──────────────────────
+        BrowserDialog::AddDatabase { name, .. } => {
+            render_input_dialog("Add Database", "Database name", name, on_message, space_s)
+        }
+        BrowserDialog::AddCollection { name, .. } => {
+            render_input_dialog("Add Collection", "Collection name", name, on_message, space_s)
         }
     };
 
