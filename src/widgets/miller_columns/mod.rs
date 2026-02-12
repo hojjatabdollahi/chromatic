@@ -26,7 +26,7 @@
 //! fn view(&self) -> Element<'_, Message> {
 //!     MillerColumns::new(&self.miller_state, Message::Miller)
 //!         .column_width(Length::Fixed(200.0))
-//!         .max_columns(4)
+//!         .max_visible_columns(4)
 //!         .into()
 //! }
 //!

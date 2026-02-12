@@ -23,7 +23,7 @@ use std::fmt::Debug;
 /// MillerColumns::new(&miller_state, Message::Miller)
 ///     .column_width(Length::Fixed(200.0))
 ///     .min_column_width(150)
-///     .max_columns(4)
+///     .max_visible_columns(4)
 ///     .into()
 /// ```
 pub struct MillerColumns<'a, D, Message>
@@ -37,7 +37,7 @@ where
     column_height: Length,
     #[allow(dead_code)]
     min_column_width: u16,
-    max_columns: Option<usize>,
+    max_visible_columns: Option<usize>,
     spacing: u16,
     item_view: Option<Box<dyn Fn(&MillerItem<D>, bool) -> Element<'a, Message> + 'a>>,
     loading_view: Option<Box<dyn Fn() -> Element<'a, Message> + 'a>>,
@@ -68,7 +68,7 @@ where
             column_width: Length::Fixed(200.0),
             column_height: Length::Fill,
             min_column_width: 150,
-            max_columns: None,
+            max_visible_columns: None,
             spacing: 4,
             item_view: None,
             loading_view: None,
@@ -116,8 +116,8 @@ where
     ///
     /// When the selection path is longer than this, earlier columns
     /// will scroll out of view.
-    pub fn max_columns(mut self, max: usize) -> Self {
-        self.max_columns = Some(max);
+    pub fn max_visible_columns(mut self, max: usize) -> Self {
+        self.max_visible_columns = Some(max);
         self
     }
 
@@ -350,7 +350,7 @@ where
     /// Builds the widget and returns it as an Element.
     pub fn build(mut self) -> Element<'a, Message> {
         let visible_count = self.state.visible_column_count();
-        let start_column = if let Some(max) = self.max_columns {
+        let start_column = if let Some(max) = self.max_visible_columns {
             if visible_count > max {
                 visible_count - max
             } else {

@@ -12,9 +12,10 @@ use std::collections::HashMap;
 pub type SelectionPath = Vec<ItemId>;
 
 /// Loading state for a column's children.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub enum ColumnState<D> {
     /// No children loaded yet for this selection.
+    #[default]
     NotLoaded,
     /// Currently fetching children.
     Loading,
@@ -22,12 +23,6 @@ pub enum ColumnState<D> {
     Loaded(Vec<MillerItem<D>>),
     /// Failed to load children.
     Error(String),
-}
-
-impl<D> Default for ColumnState<D> {
-    fn default() -> Self {
-        ColumnState::NotLoaded
-    }
 }
 
 impl<D> ColumnState<D> {
@@ -109,10 +104,11 @@ impl<D: Clone> MillerState<D> {
     /// This updates which items are selected in each column.
     pub fn select(&mut self, path: SelectionPath) {
         self.selection = path;
-        // Ensure scroll_offsets has enough entries
-        while self.scroll_offsets.len() <= self.selection.len() {
-            self.scroll_offsets.push(0.0);
-        }
+        // TODO: delete this probably
+        // // Ensure scroll_offsets has enough entries
+        // while self.scroll_offsets.len() <= self.selection.len() {
+        //     self.scroll_offsets.push(0.0);
+        // }
     }
 
     /// Selects an item at the given column index.
@@ -123,10 +119,11 @@ impl<D: Clone> MillerState<D> {
         self.selection.truncate(column);
         // Append the new selection
         self.selection.push(item_id);
-        // Ensure scroll_offsets has enough entries
-        while self.scroll_offsets.len() <= self.selection.len() {
-            self.scroll_offsets.push(0.0);
-        }
+        // TODO: delete this probably
+        // // Ensure scroll_offsets has enough entries
+        // while self.scroll_offsets.len() <= self.selection.len() {
+        //     self.scroll_offsets.push(0.0);
+        // }
     }
 
     /// Clears the selection.
