@@ -507,6 +507,8 @@ impl cosmic::Application for AppModel {
                     self.context_page = context_page;
                     self.core.window.show_context = true;
                 }
+                // Scroll columns to fill or adapt to the drawer width change
+                return self.browser.scroll_to_end();
             }
 
             Message::UpdateConfig(config) => {
