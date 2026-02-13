@@ -1121,6 +1121,8 @@ impl cosmic::Application for AppModel {
             Message::CloseDocumentDetails => {
                 self.selected_document = None;
                 self.core.window.show_context = false;
+                // Scroll to end so columns fill the reclaimed space
+                return self.browser.scroll_to_end();
             }
 
             // Collection management
