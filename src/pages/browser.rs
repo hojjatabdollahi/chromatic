@@ -102,20 +102,26 @@ pub struct AddTenantForm {
     pub editing: Option<String>,
 }
 
-/// Dialog types for the browser page.
+/// Form state for adding a database (inline in the databases column).
+#[derive(Debug, Clone)]
+pub struct AddDatabaseForm {
+    pub server_index: usize,
+    pub tenant: String,
+    pub name: String,
+}
+
+/// Form state for adding a collection (inline in the collections column).
+#[derive(Debug, Clone)]
+pub struct AddCollectionForm {
+    pub server_index: usize,
+    pub tenant: String,
+    pub database: String,
+    pub name: String,
+}
+
+/// Dialog types for the browser page (confirmations only — add forms are inline).
 #[derive(Debug, Clone)]
 pub enum BrowserDialog {
-    AddDatabase {
-        server_index: usize,
-        tenant: String,
-        name: String,
-    },
-    AddCollection {
-        server_index: usize,
-        tenant: String,
-        database: String,
-        name: String,
-    },
     /// Confirmation dialog when tenant doesn't exist on server.
     ConfirmCreateTenant { server_index: usize, tenant: String },
     /// Confirm deletion of a server.
@@ -181,6 +187,10 @@ pub struct BrowserState {
     pub editing_server: Option<(usize, AddServerForm)>,
     /// Add/edit tenant form (shown inline in the tenant column)
     pub adding_tenant: Option<AddTenantForm>,
+    /// Add database form (shown inline in the databases column)
+    pub adding_database: Option<AddDatabaseForm>,
+    /// Add collection form (shown inline in the collections column)
+    pub adding_collection: Option<AddCollectionForm>,
 
     /// Scrollable ID for the `column_view`
     pub scrollable_id: Id,
@@ -250,6 +260,8 @@ impl Default for BrowserState {
             adding_server: None,
             editing_server: None,
             adding_tenant: None,
+            adding_database: None,
+            adding_collection: None,
             scrollable_id: Id::unique(),
             menu_context: None,
             server_filter: String::new(),
@@ -468,8 +480,7 @@ pub enum BrowserMsg {
         result: Result<Vec<Document>, String>,
     },
 
-    // Dialog
-    DialogInputChanged(String),
+    // Dialog (confirmation only — no text input)
     DialogConfirm,
     DialogCancel,
 
@@ -569,16 +580,24 @@ pub enum BrowserMsg {
         result: Result<(), String>,
     },
 
-    // Add-new actions (open dialog)
-    OpenAddDatabaseDialog {
+    // Add database inline form
+    StartAddDatabase {
         server_index: usize,
         tenant: String,
     },
-    OpenAddCollectionDialog {
+    CancelAddDatabase,
+    DatabaseFormNameChanged(String),
+    SaveDatabase,
+
+    // Add collection inline form
+    StartAddCollection {
         server_index: usize,
         tenant: String,
         database: String,
     },
+    CancelAddCollection,
+    CollectionFormNameChanged(String),
+    SaveCollection,
 
     // Save menu context when right-clicking
     SetMenuContext(MenuContext),
@@ -908,7 +927,7 @@ fn build_databases_column<'a, Message: Clone + 'static>(
     server_index: usize,
     tenant: &str,
     on_message: impl Fn(BrowserMsg) -> Message + Copy + 'a,
-    _space_s: u16,
+    space_s: u16,
 ) -> Element<'a, Message> {
     let spacing = cosmic::theme::spacing();
     let tenant_owned = tenant.to_string();
@@ -935,7 +954,7 @@ fn build_databases_column<'a, Message: Clone + 'static>(
             .on_press(on_message(BrowserMsg::ToggleFilter(ColumnLevel::Databases)));
         let add_btn = widget::button::icon(icon::from_name("list-add-symbolic"))
             .extra_small()
-            .on_press(on_message(BrowserMsg::OpenAddDatabaseDialog {
+            .on_press(on_message(BrowserMsg::StartAddDatabase {
                 server_index,
                 tenant: tenant_owned.clone(),
             }));
@@ -965,30 +984,41 @@ fn build_databases_column<'a, Message: Clone + 'static>(
         LoadStatus::Error(e) => render_error(e),
         LoadStatus::Loaded => {
             let databases = state.databases_cache.get(&cache_key);
-            match databases {
-                Some(databases) if !databases.is_empty() => {
-                    let mut list = widget::column::with_capacity(databases.len()).spacing(2);
-                    for name in databases {
-                        if !filter_lower.is_empty() && !name.to_lowercase().contains(&filter_lower)
-                        {
-                            continue;
-                        }
-                        let is_selected = state.selected_database.as_deref() == Some(name.as_str());
-                        let card = render_database_card(
-                            name,
-                            is_selected,
-                            server_index,
-                            tenant_owned.clone(),
-                            on_message,
-                        );
-                        list = list.push(card);
+            let has_form = state.adding_database.is_some();
+            let db_count = databases.map_or(0, Vec::len);
+            let mut list = widget::column::with_capacity(db_count + 1).spacing(2);
+            let mut has_items = false;
+
+            if let Some(databases) = databases {
+                for name in databases {
+                    if !filter_lower.is_empty() && !name.to_lowercase().contains(&filter_lower) {
+                        continue;
                     }
-                    widget::scrollable(list)
-                        .width(Length::Fill)
-                        .height(Length::Fill)
-                        .into()
+                    let is_selected = state.selected_database.as_deref() == Some(name.as_str());
+                    let card = render_database_card(
+                        name,
+                        is_selected,
+                        server_index,
+                        tenant_owned.clone(),
+                        on_message,
+                    );
+                    list = list.push(card);
+                    has_items = true;
                 }
-                _ => widget::text::body("No databases found").into(),
+            }
+
+            // Inline add-database form at the bottom of the list
+            if let Some(ref form) = state.adding_database {
+                list = list.push(render_inline_database_form(form, on_message, space_s));
+            }
+
+            if !has_items && !has_form {
+                widget::text::body("No databases found").into()
+            } else {
+                widget::scrollable(list)
+                    .width(Length::Fill)
+                    .height(Length::Fill)
+                    .into()
             }
         }
     };
@@ -1008,7 +1038,7 @@ fn build_collections_column<'a, Message: Clone + 'static>(
     tenant: &str,
     database: &str,
     on_message: impl Fn(BrowserMsg) -> Message + Copy + 'a,
-    _space_s: u16,
+    space_s: u16,
 ) -> Element<'a, Message> {
     let spacing = cosmic::theme::spacing();
     let tenant_owned = tenant.to_string();
@@ -1039,7 +1069,7 @@ fn build_collections_column<'a, Message: Clone + 'static>(
             )));
         let add_btn = widget::button::icon(icon::from_name("list-add-symbolic"))
             .extra_small()
-            .on_press(on_message(BrowserMsg::OpenAddCollectionDialog {
+            .on_press(on_message(BrowserMsg::StartAddCollection {
                 server_index,
                 tenant: tenant_owned.clone(),
                 database: database_owned.clone(),
@@ -1070,33 +1100,45 @@ fn build_collections_column<'a, Message: Clone + 'static>(
         LoadStatus::Error(e) => render_error(e),
         LoadStatus::Loaded => {
             let collections = state.collections_cache.get(&cache_key);
-            match collections {
-                Some(collections) if !collections.is_empty() => {
-                    let mut list = widget::column::with_capacity(collections.len()).spacing(2);
-                    for collection in collections {
-                        if !filter_lower.is_empty()
-                            && !collection.name.to_lowercase().contains(&filter_lower)
-                        {
-                            continue;
-                        }
-                        let is_selected =
-                            state.selected_collection.as_deref() == Some(collection.id.as_str());
-                        let card = render_collection_card(
-                            collection,
-                            is_selected,
-                            server_index,
-                            tenant_owned.clone(),
-                            database_owned.clone(),
-                            on_message,
-                        );
-                        list = list.push(card);
+            let has_form = state.adding_collection.is_some();
+            let col_count = collections.map_or(0, Vec::len);
+            let mut list = widget::column::with_capacity(col_count + 1).spacing(2);
+            let mut has_items = false;
+
+            if let Some(collections) = collections {
+                for collection in collections {
+                    if !filter_lower.is_empty()
+                        && !collection.name.to_lowercase().contains(&filter_lower)
+                    {
+                        continue;
                     }
-                    widget::scrollable(list)
-                        .width(Length::Fill)
-                        .height(Length::Fill)
-                        .into()
+                    let is_selected =
+                        state.selected_collection.as_deref() == Some(collection.id.as_str());
+                    let card = render_collection_card(
+                        collection,
+                        is_selected,
+                        server_index,
+                        tenant_owned.clone(),
+                        database_owned.clone(),
+                        on_message,
+                    );
+                    list = list.push(card);
+                    has_items = true;
                 }
-                _ => widget::text::body("No collections found").into(),
+            }
+
+            // Inline add-collection form at the bottom of the list
+            if let Some(ref form) = state.adding_collection {
+                list = list.push(render_inline_collection_form(form, on_message, space_s));
+            }
+
+            if !has_items && !has_form {
+                widget::text::body("No collections found").into()
+            } else {
+                widget::scrollable(list)
+                    .width(Length::Fill)
+                    .height(Length::Fill)
+                    .into()
             }
         }
     };
@@ -1732,6 +1774,86 @@ fn render_inline_tenant_form<'a, Message: Clone + 'static>(
         .into()
 }
 
+/// Renders an inline database form for adding within the databases column.
+fn render_inline_database_form<'a, Message: Clone + 'static>(
+    form: &'a AddDatabaseForm,
+    on_message: impl Fn(BrowserMsg) -> Message + Copy + 'a,
+    space_s: u16,
+) -> Element<'a, Message> {
+    let mut content = widget::column::with_capacity(5).spacing(4);
+
+    content = content.push(widget::text::body("Add Database").class(cosmic::style::Text::Accent));
+    content = content.push(widget::text::caption("Name"));
+    content = content.push(
+        widget::text_input("Database name", &form.name)
+            .on_input(move |s| on_message(BrowserMsg::DatabaseFormNameChanged(s)))
+            .on_submit(move |_| on_message(BrowserMsg::SaveDatabase))
+            .width(Length::Fill)
+            .padding(4),
+    );
+
+    let button_row = widget::row::with_capacity(2)
+        .push(
+            widget::button::text("Cancel")
+                .class(cosmic::theme::Button::Standard)
+                .padding([4, 8])
+                .on_press(on_message(BrowserMsg::CancelAddDatabase)),
+        )
+        .push(
+            widget::button::suggested("Create")
+                .padding([4, 8])
+                .on_press(on_message(BrowserMsg::SaveDatabase)),
+        )
+        .spacing(4);
+    content = content.push(button_row);
+
+    widget::container(content)
+        .padding(space_s)
+        .width(Length::Fill)
+        .class(cosmic::style::Container::Card)
+        .into()
+}
+
+/// Renders an inline collection form for adding within the collections column.
+fn render_inline_collection_form<'a, Message: Clone + 'static>(
+    form: &'a AddCollectionForm,
+    on_message: impl Fn(BrowserMsg) -> Message + Copy + 'a,
+    space_s: u16,
+) -> Element<'a, Message> {
+    let mut content = widget::column::with_capacity(5).spacing(4);
+
+    content = content.push(widget::text::body("Add Collection").class(cosmic::style::Text::Accent));
+    content = content.push(widget::text::caption("Name"));
+    content = content.push(
+        widget::text_input("Collection name", &form.name)
+            .on_input(move |s| on_message(BrowserMsg::CollectionFormNameChanged(s)))
+            .on_submit(move |_| on_message(BrowserMsg::SaveCollection))
+            .width(Length::Fill)
+            .padding(4),
+    );
+
+    let button_row = widget::row::with_capacity(2)
+        .push(
+            widget::button::text("Cancel")
+                .class(cosmic::theme::Button::Standard)
+                .padding([4, 8])
+                .on_press(on_message(BrowserMsg::CancelAddCollection)),
+        )
+        .push(
+            widget::button::suggested("Create")
+                .padding([4, 8])
+                .on_press(on_message(BrowserMsg::SaveCollection)),
+        )
+        .spacing(4);
+    content = content.push(button_row);
+
+    widget::container(content)
+        .padding(space_s)
+        .width(Length::Fill)
+        .class(cosmic::style::Container::Card)
+        .into()
+}
+
 // ── Dialogs ──────────────────────────────────────────────────────────────────
 
 /// Renders a confirmation dialog (no text input, just confirm/cancel).
@@ -1758,41 +1880,6 @@ fn render_confirm_dialog<'a, Message: Clone + 'static>(
                         .on_press(on_message(BrowserMsg::DialogCancel)),
                 )
                 .push(confirm_btn)
-                .spacing(space_s),
-        )
-        .spacing(space_s);
-
-    widget::dialog()
-        .title(title.to_string())
-        .control(dialog_content)
-        .into()
-}
-
-/// Renders an input dialog (text input + confirm/cancel).
-fn render_input_dialog<'a, Message: Clone + 'static>(
-    title: &str,
-    placeholder: &'a str,
-    value: &'a str,
-    on_message: impl Fn(BrowserMsg) -> Message + Copy + 'a,
-    space_s: u16,
-) -> Element<'a, Message> {
-    let dialog_content = widget::column::with_capacity(2)
-        .push(
-            widget::text_input(placeholder, value)
-                .on_input(move |s| on_message(BrowserMsg::DialogInputChanged(s)))
-                .on_submit(move |_| on_message(BrowserMsg::DialogConfirm))
-                .width(Length::Fixed(300.0)),
-        )
-        .push(
-            widget::row::with_capacity(2)
-                .push(
-                    widget::button::standard("Cancel")
-                        .on_press(on_message(BrowserMsg::DialogCancel)),
-                )
-                .push(
-                    widget::button::suggested("Create")
-                        .on_press(on_message(BrowserMsg::DialogConfirm)),
-                )
                 .spacing(space_s),
         )
         .spacing(space_s);
@@ -1867,14 +1954,6 @@ fn render_dialog<'a, Message: Clone + 'static>(
             on_message,
             space_s,
         ),
-
-        // ── Input dialogs (text input for name) ──────────────────────
-        BrowserDialog::AddDatabase { name, .. } => {
-            render_input_dialog("Add Database", "Database name", name, on_message, space_s)
-        }
-        BrowserDialog::AddCollection { name, .. } => {
-            render_input_dialog("Add Collection", "Collection name", name, on_message, space_s)
-        }
     };
 
     widget::popover(background)

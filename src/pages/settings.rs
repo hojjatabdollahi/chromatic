@@ -212,7 +212,7 @@ pub fn view(app: &AppModel, space_s: u16, space_m: u16) -> Element<'_, Message> 
                 .description(fl!("delete-server-description"))
                 .flex_control(
                     widget::button::destructive(fl!("delete"))
-                        .on_press(Message::DeleteServer(app.config.active_server)),
+                        .on_press(Message::RequestDeleteServer(app.config.active_server)),
                 ),
         );
     }
@@ -250,7 +250,7 @@ pub fn view(app: &AppModel, space_s: u16, space_m: u16) -> Element<'_, Message> 
         );
     }
 
-    widget::scrollable(
+    let page_content: Element<'_, Message> = widget::scrollable(
         widget::column::with_capacity(4)
             .push(header)
             .push(servers_section)
@@ -260,5 +260,43 @@ pub fn view(app: &AppModel, space_s: u16, space_m: u16) -> Element<'_, Message> 
             .width(Length::Fill),
     )
     .height(Length::Fill)
-    .into()
+    .into();
+
+    // Show delete-server confirmation dialog if pending
+    if let Some(index) = app.delete_server_target {
+        let server_name = app
+            .config
+            .servers
+            .get(index)
+            .map_or("Unknown", |s| s.name.as_str());
+
+        let dialog_content = widget::column::with_capacity(2)
+            .push(widget::text::body(format!(
+                "Are you sure you want to delete server '{server_name}'? This cannot be undone."
+            )))
+            .push(
+                widget::row::with_capacity(2)
+                    .push(
+                        widget::button::standard(fl!("cancel"))
+                            .on_press(Message::CancelDeleteServer),
+                    )
+                    .push(
+                        widget::button::destructive(fl!("delete"))
+                            .on_press(Message::ConfirmDeleteServer),
+                    )
+                    .spacing(space_s),
+            )
+            .spacing(space_s);
+
+        let dialog_widget = widget::dialog()
+            .title(fl!("delete-server"))
+            .control(dialog_content);
+
+        widget::popover(page_content)
+            .modal(true)
+            .popup(dialog_widget)
+            .into()
+    } else {
+        page_content
+    }
 }

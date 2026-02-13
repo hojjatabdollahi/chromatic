@@ -6,8 +6,8 @@ use crate::fl;
 use crate::helpers;
 use crate::pages;
 use crate::pages::browser::{
-    AddServerForm, AddServerStatus, AddTenantForm, BrowserDialog, BrowserMsg, BrowserState,
-    ColumnLevel, MenuContext,
+    AddCollectionForm, AddDatabaseForm, AddServerForm, AddServerStatus, AddTenantForm,
+    BrowserDialog, BrowserMsg, BrowserState, ColumnLevel, MenuContext,
 };
 use cosmetics::widgets::column_view::ColumnViewMessage;
 use cosmic::app::context_drawer;
@@ -95,6 +95,8 @@ pub struct AppModel {
     pub delete_collection_target: Option<Collection>,
     /// Document pending deletion (for confirmation dialog)
     pub delete_document_target: Option<Document>,
+    /// Server index pending deletion on settings page (for confirmation dialog)
+    pub delete_server_target: Option<usize>,
     /// New collection name input
     pub new_collection_name: String,
     /// Whether the new collection dialog is open
@@ -192,7 +194,7 @@ pub enum Message {
     // Server management
     SelectServer(usize),
     AddNewServer,
-    DeleteServer(usize),
+
 
     // Connection & data
     TestConnection,
@@ -246,6 +248,11 @@ pub enum Message {
     ConfirmDeleteDocument,
     CancelDeleteDocument,
     DeleteDocumentResult(Result<(), String>),
+
+    // Delete server (settings page — with confirmation)
+    RequestDeleteServer(usize),
+    ConfirmDeleteServer,
+    CancelDeleteServer,
 
     // Browser
     Browser(BrowserMsg),
@@ -365,6 +372,7 @@ impl cosmic::Application for AppModel {
             selected_document: None,
             delete_collection_target: None,
             delete_document_target: None,
+            delete_server_target: None,
             new_collection_name: String::new(),
             show_new_collection_dialog: false,
             browser,
@@ -595,29 +603,39 @@ impl cosmic::Application for AppModel {
                 self.connection_status = ConnectionStatus::Disconnected;
             }
 
-            Message::DeleteServer(index) => {
-                if self.config.remove_server(index) {
-                    // Save the config
-                    if let Some(ref context) = self.config_context {
-                        let _ = self.config.write_entry(context);
+            Message::RequestDeleteServer(index) => {
+                self.delete_server_target = Some(index);
+            }
+
+            Message::ConfirmDeleteServer => {
+                if let Some(index) = self.delete_server_target.take() {
+                    if self.config.remove_server(index) {
+                        // Save the config
+                        if let Some(ref context) = self.config_context {
+                            let _ = self.config.write_entry(context);
+                        }
+                        // Update server names for dropdown
+                        self.server_names =
+                            self.config.servers.iter().map(|s| s.name.clone()).collect();
+                        // Update input fields with the (possibly new) active server
+                        let active = self.config.active_config();
+                        self.server_name_input = active.name.clone();
+                        self.server_url_input = active.server_url.clone();
+                        self.auth_token_input = active.auth_token.clone();
+                        self.auth_header_type_input = active.auth_header_type.clone();
+                        self.tenant_input = active.tenant.clone();
+                        self.database_input = active.database.clone();
+                        self.editing_server_index = Some(self.config.active_server);
+                        // Clear cached data
+                        self.collections.clear();
+                        self.server_info = None;
+                        self.connection_status = ConnectionStatus::Disconnected;
                     }
-                    // Update server names for dropdown
-                    self.server_names =
-                        self.config.servers.iter().map(|s| s.name.clone()).collect();
-                    // Update input fields with the (possibly new) active server
-                    let active = self.config.active_config();
-                    self.server_name_input = active.name.clone();
-                    self.server_url_input = active.server_url.clone();
-                    self.auth_token_input = active.auth_token.clone();
-                    self.auth_header_type_input = active.auth_header_type.clone();
-                    self.tenant_input = active.tenant.clone();
-                    self.database_input = active.database.clone();
-                    self.editing_server_index = Some(self.config.active_server);
-                    // Clear cached data
-                    self.collections.clear();
-                    self.server_info = None;
-                    self.connection_status = ConnectionStatus::Disconnected;
                 }
+            }
+
+            Message::CancelDeleteServer => {
+                self.delete_server_target = None;
             }
 
             Message::SaveSettings => {
@@ -1096,6 +1114,8 @@ impl cosmic::Application for AppModel {
                 self.selected_document = Some(document);
                 self.context_page = ContextPage::DocumentDetails;
                 self.core.window.show_context = true;
+                // Scroll to keep documents column visible when drawer opens
+                return self.browser.scroll_to_end();
             }
 
             Message::CloseDocumentDetails => {
@@ -1522,6 +1542,8 @@ impl AppModel {
                             self.browser.selected_document = Some(doc.clone());
                             self.context_page = ContextPage::DocumentDetails;
                             self.core.window.show_context = true;
+                            // Scroll to keep documents column visible when drawer opens
+                            return self.browser.scroll_to_end();
                         }
                     }
                 }
@@ -1631,21 +1653,6 @@ impl AppModel {
 
             // ── Dialogs ──────────────────────────────────────────────────
 
-            BrowserMsg::DialogInputChanged(value) => {
-                if let Some(ref mut dialog) = self.browser.dialog {
-                    match dialog {
-                        BrowserDialog::AddDatabase { name, .. }
-                        | BrowserDialog::AddCollection { name, .. } => *name = value,
-                        // Confirmation dialogs have no text input
-                        BrowserDialog::ConfirmCreateTenant { .. }
-                        | BrowserDialog::ConfirmDeleteServer { .. }
-                        | BrowserDialog::ConfirmDeleteDatabase { .. }
-                        | BrowserDialog::ConfirmDeleteCollection { .. }
-                        | BrowserDialog::ConfirmDeleteDocument { .. } => {}
-                    }
-                }
-            }
-
             BrowserMsg::DialogCancel => {
                 self.browser.dialog = None;
             }
@@ -1677,67 +1684,6 @@ impl AppModel {
                                 }))
                             });
                         }
-                        BrowserDialog::AddDatabase {
-                            server_index,
-                            tenant,
-                            name,
-                        } => {
-                            let config = &self.config.servers[server_index];
-                            let url = config.server_url.clone();
-                            let token = config.auth_token.clone();
-                            let auth_header_type = config.auth_header_type.clone();
-
-                            return cosmic::task::future(async move {
-                                let result = helpers::create_database(
-                                    &url,
-                                    &token,
-                                    &auth_header_type,
-                                    &name,
-                                    &tenant,
-                                )
-                                .await;
-                                cosmic::Action::App(Message::Browser(
-                                    BrowserMsg::DatabaseCreated {
-                                        server_index,
-                                        tenant,
-                                        database: name,
-                                        result,
-                                    },
-                                ))
-                            });
-                        }
-                        BrowserDialog::AddCollection {
-                            server_index,
-                            tenant,
-                            database,
-                            name,
-                        } => {
-                            let config = &self.config.servers[server_index];
-                            let url = config.server_url.clone();
-                            let token = config.auth_token.clone();
-                            let auth_header_type = config.auth_header_type.clone();
-
-                            return cosmic::task::future(async move {
-                                let result = helpers::create_collection(
-                                    &url,
-                                    &token,
-                                    &auth_header_type,
-                                    &name,
-                                    &tenant,
-                                    &database,
-                                )
-                                .await;
-                                cosmic::Action::App(Message::Browser(
-                                    BrowserMsg::CollectionCreated {
-                                        server_index,
-                                        tenant,
-                                        database,
-                                        result,
-                                    },
-                                ))
-                            });
-                        }
-
                         // ── Confirm delete actions ───────────────────────
 
                         BrowserDialog::ConfirmDeleteServer { index, .. } => {
@@ -2347,27 +2293,115 @@ impl AppModel {
                 }
             },
 
-            // ── Add-new dialog openers ───────────────────────────────────
+            // ── Add database inline form ──────────────────────────────────
 
-            BrowserMsg::OpenAddDatabaseDialog { server_index, tenant } => {
-                self.browser.dialog = Some(BrowserDialog::AddDatabase {
+            BrowserMsg::StartAddDatabase { server_index, tenant } => {
+                self.browser.adding_database = Some(AddDatabaseForm {
                     server_index,
                     tenant,
                     name: String::new(),
                 });
             }
 
-            BrowserMsg::OpenAddCollectionDialog {
+            BrowserMsg::CancelAddDatabase => {
+                self.browser.adding_database = None;
+            }
+
+            BrowserMsg::DatabaseFormNameChanged(name) => {
+                if let Some(ref mut form) = self.browser.adding_database {
+                    form.name = name;
+                }
+            }
+
+            BrowserMsg::SaveDatabase => {
+                if let Some(form) = self.browser.adding_database.take() {
+                    let name = form.name.trim().to_string();
+                    if name.is_empty() {
+                        return Task::none();
+                    }
+                    let server_index = form.server_index;
+                    let tenant = form.tenant;
+                    let config = &self.config.servers[server_index];
+                    let url = config.server_url.clone();
+                    let token = config.auth_token.clone();
+                    let auth_header_type = config.auth_header_type.clone();
+
+                    return cosmic::task::future(async move {
+                        let result = helpers::create_database(
+                            &url,
+                            &token,
+                            &auth_header_type,
+                            &name,
+                            &tenant,
+                        )
+                        .await;
+                        cosmic::Action::App(Message::Browser(BrowserMsg::DatabaseCreated {
+                            server_index,
+                            tenant,
+                            database: name,
+                            result,
+                        }))
+                    });
+                }
+            }
+
+            // ── Add collection inline form ───────────────────────────────
+
+            BrowserMsg::StartAddCollection {
                 server_index,
                 tenant,
                 database,
             } => {
-                self.browser.dialog = Some(BrowserDialog::AddCollection {
+                self.browser.adding_collection = Some(AddCollectionForm {
                     server_index,
                     tenant,
                     database,
                     name: String::new(),
                 });
+            }
+
+            BrowserMsg::CancelAddCollection => {
+                self.browser.adding_collection = None;
+            }
+
+            BrowserMsg::CollectionFormNameChanged(name) => {
+                if let Some(ref mut form) = self.browser.adding_collection {
+                    form.name = name;
+                }
+            }
+
+            BrowserMsg::SaveCollection => {
+                if let Some(form) = self.browser.adding_collection.take() {
+                    let name = form.name.trim().to_string();
+                    if name.is_empty() {
+                        return Task::none();
+                    }
+                    let server_index = form.server_index;
+                    let tenant = form.tenant;
+                    let database = form.database;
+                    let config = &self.config.servers[server_index];
+                    let url = config.server_url.clone();
+                    let token = config.auth_token.clone();
+                    let auth_header_type = config.auth_header_type.clone();
+
+                    return cosmic::task::future(async move {
+                        let result = helpers::create_collection(
+                            &url,
+                            &token,
+                            &auth_header_type,
+                            &name,
+                            &tenant,
+                            &database,
+                        )
+                        .await;
+                        cosmic::Action::App(Message::Browser(BrowserMsg::CollectionCreated {
+                            server_index,
+                            tenant,
+                            database,
+                            result,
+                        }))
+                    });
+                }
             }
 
             // ── Add/edit tenant form ─────────────────────────────────────
